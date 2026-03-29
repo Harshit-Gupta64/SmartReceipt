@@ -1,9 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import {
+  Alert,
+  Box,
+  Card,
+  CardContent,
+  Grid,
+  Skeleton,
+  Stack,
+  Typography,
+} from "@mui/material";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useCallback, useEffect, useState } from "react";
 import {
   FileText,
   Receipt,
@@ -12,54 +21,84 @@ import {
   TrendingUp,
 } from "lucide-react";
 
+type ProductRow = {
+  id: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  reorder_point: number;
+};
+
+type InvoiceTotalRow = {
+  total: number;
+};
+
+type ExpenseRow = {
+  amount: number;
+};
+
 export default function DashboardPage() {
   const { user } = useUser();
+  const userId = user?.id;
+  const [loading, setLoading] = useState(true);
+
   const [revenue, setRevenue] = useState(0);
   const [unpaidInvoices, setUnpaidInvoices] = useState(0);
   const [totalProducts, setTotalProducts] = useState(0);
   const [lowStockCount, setLowStockCount] = useState(0);
   const [totalExpenses, setTotalExpenses] = useState(0);
-  const [topProducts, setTopProducts] = useState<any[]>([]);
+  const [topProducts, setTopProducts] = useState<ProductRow[]>([]);
 
-  useEffect(() => {
-    if (user) fetchDashboardData();
-  }, [user]);
+  const fetchDashboardData = useCallback(async () => {
+    if (!userId) return;
 
-  async function fetchDashboardData() {
-    // Revenue from paid invoices
     const { data: paidInvoices } = await supabase
       .from("invoices")
       .select("total")
-      .eq("user_id", user?.id)
+      .eq("user_id", userId)
       .eq("status", "paid");
-    setRevenue(paidInvoices?.reduce((sum, inv) => sum + inv.total, 0) || 0);
 
-    // Unpaid invoices count
+    const paidInvoiceRows = (paidInvoices as InvoiceTotalRow[] | null) || [];
+    setRevenue(
+      paidInvoiceRows.reduce((sum, invoice) => sum + Number(invoice.total), 0)
+    );
+
     const { data: unpaid } = await supabase
       .from("invoices")
       .select("id")
-      .eq("user_id", user?.id)
+      .eq("user_id", userId)
       .eq("status", "unpaid");
     setUnpaidInvoices(unpaid?.length || 0);
 
-    // Total expenses
     const { data: expenses } = await supabase
       .from("expenses")
       .select("amount")
-      .eq("user_id", user?.id);
-    setTotalExpenses(expenses?.reduce((sum, e) => sum + Number(e.amount), 0) || 0);
+      .eq("user_id", userId);
 
-    // Products
+    const expenseRows = (expenses as ExpenseRow[] | null) || [];
+    setTotalExpenses(
+      expenseRows.reduce((sum, expense) => sum + Number(expense.amount), 0)
+    );
+
     const { data: products } = await supabase
       .from("products")
       .select("*")
-      .eq("user_id", user?.id);
-    setTotalProducts(products?.length || 0);
+      .eq("user_id", userId);
+
+    const typedProducts = (products as ProductRow[] | null) || [];
+    setTotalProducts(typedProducts.length);
     setLowStockCount(
-      products?.filter((p) => p.quantity <= p.reorder_point).length || 0
+      typedProducts.filter(
+        (product) => product.quantity <= product.reorder_point
+      ).length
     );
-    setTopProducts(products?.slice(0, 5) || []);
-  }
+    setTopProducts(typedProducts.slice(0, 5));
+    setLoading(false);
+  }, [userId]);
+
+  useEffect(() => {
+    void fetchDashboardData();
+  }, [fetchDashboardData]);
 
   const profitLoss = revenue - totalExpenses;
 
@@ -96,64 +135,136 @@ export default function DashboardPage() {
     },
   ];
 
+  // Skeleton loading state
+  if (loading) {
+    return (
+      <Stack spacing={3}>
+        <Box>
+          <Skeleton variant="text" width={200} height={40} />
+          <Skeleton variant="text" width={320} height={24} />
+        </Box>
+
+        {/* Stat card skeletons */}
+        <Grid container spacing={2}>
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Grid key={i} size={{ xs: 12, sm: 6, md: 4, lg: 2.4 }}>
+              <Card>
+                <CardContent>
+                  <Skeleton variant="text" width="60%" height={20} />
+                  <Skeleton variant="text" width="80%" height={36} sx={{ my: 0.5 }} />
+                  <Skeleton variant="text" width="50%" height={16} />
+                </CardContent>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
+
+        {/* Stock overview skeleton */}
+        <Card>
+          <CardContent>
+            <Skeleton variant="text" width={200} height={32} sx={{ mb: 2 }} />
+            <Stack spacing={1.25}>
+              {[1, 2, 3, 4, 5].map((i) => (
+                <Box
+                  key={i}
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 2fr 1fr",
+                    gap: 1,
+                    alignItems: "center",
+                    p: 1,
+                  }}
+                >
+                  <Skeleton variant="text" width="80%" />
+                  <Skeleton variant="text" width="90%" />
+                  <Skeleton variant="text" width="60%" />
+                </Box>
+              ))}
+            </Stack>
+          </CardContent>
+        </Card>
+      </Stack>
+    );
+  }
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-        <p className="text-muted-foreground">
-          Welcome to SmartReceipt — your business at a glance.
-        </p>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+    <Stack spacing={3}>
+      <Box>
+        <Typography variant="h4">Dashboard</Typography>
+        <Typography variant="body1" color="text.secondary">
+          Welcome to SmartReceipt, your business at a glance.
+        </Typography>
+      </Box>
+
+      <Grid container spacing={2}>
         {stats.map((stat) => (
-          <Card key={stat.title}>
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">
-                {stat.title}
-              </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stat.value}</div>
-              <p className="text-xs text-muted-foreground">{stat.description}</p>
-            </CardContent>
-          </Card>
+          <Grid key={stat.title} size={{ xs: 12, sm: 6, md: 4, lg: 2.4 }}>
+            <Card>
+              <CardContent>
+                <Stack direction="row" justifyContent="space-between" mb={1}>
+                  <Typography variant="body2" color="text.secondary">
+                    {stat.title}
+                  </Typography>
+                  <stat.icon size={18} />
+                </Stack>
+                <Typography variant="h6" fontWeight={700}>
+                  {stat.value}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {stat.description}
+                </Typography>
+              </CardContent>
+            </Card>
+          </Grid>
         ))}
-      </div>
+      </Grid>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">
-            Product Stock Overview
-          </CardTitle>
-        </CardHeader>
         <CardContent>
+          <Typography variant="h6" mb={2}>
+            Product Stock Overview
+          </Typography>
           {topProducts.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No products yet.</p>
+            <Alert severity="info">No products yet.</Alert>
           ) : (
-            <div className="space-y-2">
+            <Stack spacing={1.25}>
               {topProducts.map((product) => (
-                <div
+                <Box
                   key={product.id}
-                  className="flex items-center justify-between text-sm"
+                  sx={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 2fr 1fr",
+                    gap: 1,
+                    alignItems: "center",
+                    p: 1,
+                    borderRadius: 2,
+                    bgcolor: "background.default",
+                  }}
                 >
-                  <span className="text-muted-foreground">{product.sku}</span>
-                  <span className="font-medium">{product.name}</span>
-                  <span
-                    className={
+                  <Typography variant="body2" color="text.secondary">
+                    {product.sku}
+                  </Typography>
+                  <Typography variant="body2" fontWeight={600}>
+                    {product.name}
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    fontWeight={700}
+                    color={
                       product.quantity <= product.reorder_point
-                        ? "text-red-500 font-bold"
-                        : "text-green-600 font-bold"
+                        ? "error.main"
+                        : "success.main"
                     }
+                    textAlign="right"
                   >
                     {product.quantity} units
-                  </span>
-                </div>
+                  </Typography>
+                </Box>
               ))}
-            </div>
+            </Stack>
           )}
         </CardContent>
       </Card>
-    </div>
+    </Stack>
   );
 }

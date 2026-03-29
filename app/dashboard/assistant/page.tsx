@@ -1,11 +1,20 @@
 "use client";
 
+import SendIcon from "@mui/icons-material/Send";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
+import {
+  Avatar,
+  Box,
+  Button,
+  Chip,
+  CircularProgress,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { useState } from "react";
 import { useUser } from "@clerk/nextjs";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card, CardContent } from "@/components/ui/card";
-import { Bot, Send, User } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -66,58 +75,94 @@ export default function AssistantPage() {
   }
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <h2 className="text-3xl font-bold tracking-tight">AI Assistant</h2>
-        <p className="text-muted-foreground">
+    <Stack spacing={3} sx={{ maxWidth: 960, mx: "auto" }}>
+      <Box>
+        <Typography variant="h4">AI Assistant</Typography>
+        <Typography color="text.secondary">
           Ask anything about your business
-        </p>
-      </div>
+        </Typography>
+      </Box>
 
-      <div className="grid grid-cols-2 gap-2">
+      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
         {SAMPLE_QUESTIONS.map((q) => (
-          <Button
+          <Chip
             key={q}
-            variant="outline"
-            className="text-left h-auto py-2 px-3 text-sm"
+            label={q}
+            variant="outlined"
             onClick={() => sendMessage(q)}
-          >
-            {q}
-          </Button>
+            clickable
+            sx={{ borderRadius: 2 }}
+          />
         ))}
-      </div>
+      </Stack>
 
-      <div className="space-y-4 min-h-96 max-h-[500px] overflow-y-auto border rounded-lg p-4">
+      <Paper
+        variant="outlined"
+        sx={{
+          minHeight: 420,
+          maxHeight: 560,
+          overflowY: "auto",
+          p: 2,
+          borderRadius: 3,
+        }}
+      >
+        <Stack spacing={2}>
         {messages.map((msg, index) => (
-          <div
+          <Box
             key={index}
-            className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+            sx={{
+              display: "flex",
+              gap: 1,
+              justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
+            }}
           >
             {msg.role === "assistant" && (
-              <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
-                <Bot className="h-4 w-4 text-primary-foreground" />
-              </div>
+              <Avatar sx={{ bgcolor: "primary.main", width: 32, height: 32 }}>
+                <SmartToyIcon sx={{ fontSize: 18 }} />
+              </Avatar>
             )}
-            <Card
-              className={`max-w-[80%] ${msg.role === "user" ? "bg-primary text-primary-foreground" : ""}`}
+            <Paper
+              elevation={0}
+              sx={{
+                maxWidth: "80%",
+                px: 1.5,
+                py: 1,
+                borderRadius: 2,
+                bgcolor: msg.role === "user" ? "primary.main" : "background.default",
+                color: msg.role === "user" ? "primary.contrastText" : "text.primary",
+              }}
             >
-              <CardContent className="p-3 text-sm">
+              <Box sx={{ fontSize: 14, lineHeight: 1.6 }}>
                 {msg.role === "assistant" ? (
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
                       p: ({ children }) => (
-                        <p className="mb-2 last:mb-0 leading-relaxed">{children}</p>
+                        <p style={{ marginTop: 0, marginBottom: 8 }}>{children}</p>
                       ),
                       ul: ({ children }) => (
-                        <ul className="list-disc pl-5 mb-2 last:mb-0">{children}</ul>
+                        <ul style={{ marginTop: 0, marginBottom: 8, paddingLeft: 18 }}>
+                          {children}
+                        </ul>
                       ),
                       ol: ({ children }) => (
-                        <ol className="list-decimal pl-5 mb-2 last:mb-0">{children}</ol>
+                        <ol style={{ marginTop: 0, marginBottom: 8, paddingLeft: 18 }}>
+                          {children}
+                        </ol>
                       ),
-                      li: ({ children }) => <li className="mb-1">{children}</li>,
+                      li: ({ children }) => (
+                        <li style={{ marginBottom: 4 }}>{children}</li>
+                      ),
                       code: ({ children }) => (
-                        <code className="rounded bg-muted px-1.5 py-0.5 text-xs break-words">
+                        <code
+                          style={{
+                            backgroundColor: "rgba(15,23,42,0.08)",
+                            borderRadius: 6,
+                            padding: "1px 6px",
+                            fontSize: 12,
+                            wordBreak: "break-word",
+                          }}
+                        >
                           {children}
                         </code>
                       ),
@@ -126,7 +171,7 @@ export default function AssistantPage() {
                           href={href}
                           target="_blank"
                           rel="noreferrer"
-                          className="underline underline-offset-2"
+                          style={{ textDecoration: "underline" }}
                         >
                           {children}
                         </a>
@@ -138,40 +183,44 @@ export default function AssistantPage() {
                 ) : (
                   msg.content
                 )}
-              </CardContent>
-            </Card>
-            {msg.role === "user" && (
-              <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
-                <User className="h-4 w-4" />
-              </div>
-            )}
-          </div>
+              </Box>
+            </Paper>
+          </Box>
         ))}
         {loading && (
-          <div className="flex gap-3 justify-start">
-            <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-              <Bot className="h-4 w-4 text-primary-foreground" />
-            </div>
-            <Card>
-              <CardContent className="p-3 text-sm text-muted-foreground">
-                Thinking...
-              </CardContent>
-            </Card>
-          </div>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <CircularProgress size={18} />
+            <Typography variant="body2" color="text.secondary">
+              Thinking...
+            </Typography>
+          </Stack>
         )}
-      </div>
+        </Stack>
+      </Paper>
 
-      <div className="flex gap-2">
-        <Input
+      <Stack direction="row" spacing={1}>
+        <TextField
+          fullWidth
+          size="small"
           placeholder="Ask about your business..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && sendMessage()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void sendMessage();
+            }
+          }}
         />
-        <Button onClick={() => sendMessage()} disabled={loading}>
-          <Send className="h-4 w-4" />
+        <Button
+          variant="contained"
+          onClick={() => void sendMessage()}
+          disabled={loading}
+          endIcon={<SendIcon />}
+        >
+          Send
         </Button>
-      </div>
-    </div>
+      </Stack>
+    </Stack>
   );
 }

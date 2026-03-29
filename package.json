@@ -11,7 +11,11 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
     "@clerk/nextjs": "^7.0.7",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
     "@google/generative-ai": "^0.24.1",
+    "@mui/icons-material": "^7.3.9",
+    "@mui/material": "^7.3.9",
     "@supabase/supabase-js": "^2.100.1",
     "@tabler/icons-react": "^3.41.0",
     "class-variance-authority": "^0.7.1",

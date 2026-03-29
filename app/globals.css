@@ -128,3 +128,17 @@
     @apply font-sans;
   }
 }
+
+/* Hover-lift fallback for existing shadcn cards while migration is in progress */
+[data-slot="card"] {
+  transition:
+    transform 220ms ease,
+    box-shadow 220ms ease,
+    border-color 220ms ease;
+  transform-style: preserve-3d;
+}
+
+[data-slot="card"]:hover {
+  transform: translateY(-8px) scale(1.01);
+  box-shadow: 0 22px 45px rgba(15, 23, 42, 0.2);
+}

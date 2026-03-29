@@ -1,28 +1,64 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import AddIcon from "@mui/icons-material/Add";
+import DeleteIcon from "@mui/icons-material/Delete";
+import EditIcon from "@mui/icons-material/Edit";
+import InventoryIcon from "@mui/icons-material/Inventory2";
+import RemoveIcon from "@mui/icons-material/Remove";
+import SearchIcon from "@mui/icons-material/Search";
+import {
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Grid,
+  IconButton,
+  InputAdornment,
+  MenuItem,
+  Select,
+  Skeleton,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Plus, Search, Package } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+import { useCallback, useEffect, useMemo, useState } from "react";
+
+type ProductRow = {
+  id: string;
+  name: string;
+  sku: string;
+  category: string | null;
+  quantity: number;
+  unit_cost: number;
+  reorder_point: number;
+  expiry_date: string | null;
+  supplier_id: string | null;
+  vendors?: { name: string } | null;
+};
+
+type VendorRow = {
+  id: string;
+  name: string;
+};
 
 export default function InventoryPage() {
   const { user } = useUser();
-  const [products, setProducts] = useState<any[]>([]);
-  const [vendors, setVendors] = useState<any[]>([]);
+  const userId = user?.id;
+  const [products, setProducts] = useState<ProductRow[]>([]);
+  const [vendors, setVendors] = useState<VendorRow[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
     sku: "",
@@ -34,42 +70,7 @@ export default function InventoryPage() {
     expiry_date: "",
   });
 
-  useEffect(() => {
-    if (user) {
-      fetchProducts();
-      fetchVendors();
-    }
-  }, [user]);
-
-  async function fetchProducts() {
-    const { data } = await supabase
-      .from("products")
-      .select("*, vendors(name)")
-      .eq("user_id", user?.id)
-      .order("created_at", { ascending: false });
-    setProducts(data || []);
-    setLoading(false);
-  }
-
-  async function fetchVendors() {
-    const { data } = await supabase
-      .from("vendors")
-      .select("*")
-      .eq("user_id", user?.id);
-    setVendors(data || []);
-  }
-
-  async function addProduct() {
-    if (!form.name || !form.sku) return;
-    await supabase.from("products").insert({
-      ...form,
-      quantity: Number(form.quantity),
-      unit_cost: Number(form.unit_cost),
-      reorder_point: Number(form.reorder_point),
-      supplier_id: form.supplier_id || null,
-      expiry_date: form.expiry_date || null,
-      user_id: user?.id,
-    });
+  function resetForm() {
     setForm({
       name: "",
       sku: "",
@@ -80,8 +81,87 @@ export default function InventoryPage() {
       supplier_id: "",
       expiry_date: "",
     });
+    setEditingProductId(null);
+  }
+
+  const fetchProducts = useCallback(async () => {
+    if (!userId) return;
+    const { data } = await supabase
+      .from("products")
+      .select("*, vendors(name)")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    setProducts((data as ProductRow[]) || []);
+    setLoading(false);
+  }, [userId]);
+
+  const fetchVendors = useCallback(async () => {
+    if (!userId) return;
+    const { data } = await supabase
+      .from("vendors")
+      .select("*")
+      .eq("user_id", userId);
+    setVendors((data as VendorRow[]) || []);
+  }, [userId]);
+
+  useEffect(() => {
+    void fetchProducts();
+    void fetchVendors();
+  }, [fetchProducts, fetchVendors]);
+
+  async function saveProduct() {
+    if (!form.name || !form.sku) return;
+
+    const payload = {
+      ...form,
+      quantity: Number(form.quantity) || 0,
+      unit_cost: Number(form.unit_cost) || 0,
+      reorder_point: Number(form.reorder_point) || 0,
+      supplier_id: form.supplier_id || null,
+      expiry_date: form.expiry_date || null,
+    };
+
+    if (editingProductId) {
+      await supabase.from("products").update(payload).eq("id", editingProductId);
+    } else {
+      await supabase.from("products").insert({
+        ...payload,
+        user_id: userId,
+      });
+    }
+
+    resetForm();
     setOpen(false);
-    fetchProducts();
+    void fetchProducts();
+  }
+
+  function openAddDialog() {
+    resetForm();
+    setOpen(true);
+  }
+
+  function openEditDialog(product: ProductRow) {
+    setEditingProductId(product.id);
+    setForm({
+      name: product.name,
+      sku: product.sku,
+      category: product.category || "",
+      quantity: String(product.quantity),
+      unit_cost: String(product.unit_cost),
+      reorder_point: String(product.reorder_point),
+      supplier_id: product.supplier_id || "",
+      expiry_date: product.expiry_date || "",
+    });
+    setOpen(true);
+  }
+
+  async function deleteProduct() {
+    if (!deleteId) return;
+    await supabase.from("stock_movements").delete().eq("product_id", deleteId);
+    await supabase.from("inventory_alerts").delete().eq("product_id", deleteId);
+    await supabase.from("products").delete().eq("id", deleteId);
+    setDeleteId(null);
+    void fetchProducts();
   }
 
   async function updateQuantity(id: string, delta: number, reason: string) {
@@ -89,185 +169,346 @@ export default function InventoryPage() {
     if (!product) return;
     const newQty = product.quantity + delta;
     if (newQty < 0) return;
-    await supabase
-      .from("products")
-      .update({ quantity: newQty })
-      .eq("id", id);
+    await supabase.from("products").update({ quantity: newQty }).eq("id", id);
     await supabase.from("stock_movements").insert({
       product_id: id,
-      user_id: user?.id,
+      user_id: userId,
       delta,
       reason,
     });
-    fetchProducts();
+    void fetchProducts();
   }
 
-  function getStockStatus(product: any) {
-    if (product.quantity === 0) return { label: "Out of Stock", variant: "destructive" };
-    if (product.quantity <= product.reorder_point) return { label: "Low Stock", variant: "secondary" };
-    return { label: "Healthy", variant: "outline" };
+  function getStockStatus(product: ProductRow): {
+    label: string;
+    color: "error" | "warning" | "success";
+  } {
+    if (product.quantity === 0)
+      return { label: "Out of Stock", color: "error" };
+    if (product.quantity <= product.reorder_point)
+      return { label: "Low Stock", color: "warning" };
+    return { label: "Healthy", color: "success" };
   }
 
-  const filtered = products.filter(
-    (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      p.sku.toLowerCase().includes(search.toLowerCase())
+  const filtered = useMemo(
+    () =>
+      products.filter(
+        (p) =>
+          p.name.toLowerCase().includes(search.toLowerCase()) ||
+          p.sku.toLowerCase().includes(search.toLowerCase())
+      ),
+    [products, search]
   );
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight">Inventory</h2>
-          <p className="text-muted-foreground">Track your stock levels</p>
-        </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="mr-2 h-4 w-4" />
-              Add Product
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Add New Product</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <Input
-                placeholder="Product Name *"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-              />
-              <Input
-                placeholder="SKU * (e.g. SKU-001)"
-                value={form.sku}
-                onChange={(e) => setForm({ ...form, sku: e.target.value })}
-              />
-              <Input
-                placeholder="Category"
-                value={form.category}
-                onChange={(e) => setForm({ ...form, category: e.target.value })}
-              />
-              <Input
-                type="number"
-                placeholder="Initial Quantity"
-                value={form.quantity || ""}
-                onChange={(e) => setForm({ ...form, quantity: e.target.value })}
-              />
-              <Input
-                type="number"
-                placeholder="Unit Cost (₹)"
-                value={form.unit_cost || ""}
-                onChange={(e) => setForm({ ...form, unit_cost: e.target.value })}
-              />
-              <Input
-                type="number"
-                placeholder="Reorder Point (alert threshold)"
-                value={form.reorder_point || ""}
-                onChange={(e) => setForm({ ...form, reorder_point: e.target.value })}
-              />
-              <select
-                className="w-full border rounded-md px-3 py-2 text-sm"
-                value={form.supplier_id}
-                onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
-              >
-                <option value="">Select Supplier (optional)</option>
-                {vendors.map((v) => (
-                  <option key={v.id} value={v.id}>
-                    {v.name}
-                  </option>
-                ))}
-              </select>
-              <Input
-                type="date"
-                placeholder="Expiry Date (optional)"
-                value={form.expiry_date}
-                onChange={(e) => setForm({ ...form, expiry_date: e.target.value })}
-              />
-              <Button onClick={addProduct} className="w-full">
-                Save Product
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </div>
+    <Stack spacing={3}>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        justifyContent="space-between"
+        spacing={2}
+      >
+        <Box>
+          <Typography variant="h4">Inventory</Typography>
+          <Typography color="text.secondary">
+            Track your stock levels
+          </Typography>
+        </Box>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={openAddDialog}
+        >
+          Add Product
+        </Button>
+      </Stack>
 
-      <div className="flex items-center gap-2">
-        <Search className="h-4 w-4 text-muted-foreground" />
-        <Input
-          placeholder="Search by name or SKU..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="max-w-sm"
-        />
-      </div>
+      <TextField
+        size="small"
+        placeholder="Search by name or SKU..."
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        sx={{ maxWidth: 420 }}
+        InputProps={{
+          startAdornment: (
+            <InputAdornment position="start">
+              <SearchIcon fontSize="small" />
+            </InputAdornment>
+          ),
+        }}
+      />
 
       {loading ? (
-        <p className="text-muted-foreground">Loading...</p>
+        <Grid container spacing={2}>
+          {Array.from({ length: 6 }).map((_, index) => (
+            <Grid key={`inventory-skeleton-${index}`} size={{ xs: 12, md: 6, lg: 4 }}>
+              <Card>
+                <CardHeader
+                  title={<Skeleton variant="text" width="46%" height={30} />}
+                  subheader={<Skeleton variant="text" width="34%" />}
+                  action={
+                    <Stack direction="row" alignItems="center" spacing={1}>
+                      <Skeleton variant="rounded" width={78} height={24} />
+                      <Skeleton variant="circular" width={30} height={30} />
+                      <Skeleton variant="circular" width={30} height={30} />
+                    </Stack>
+                  }
+                />
+                <CardContent>
+                  <Stack spacing={1}>
+                    <Skeleton variant="text" width="86%" />
+                    <Skeleton variant="text" width="78%" />
+                    <Skeleton variant="text" width="72%" />
+                    <Skeleton variant="rounded" width={90} height={24} />
+                    <Stack direction="row" spacing={1} pt={1}>
+                      <Skeleton variant="rounded" width={96} height={32} />
+                      <Skeleton variant="rounded" width={80} height={32} />
+                    </Stack>
+                  </Stack>
+                </CardContent>
+              </Card>
+            </Grid>
+          ))}
+        </Grid>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-12">
-          <Package className="mx-auto h-12 w-12 text-muted-foreground" />
-          <p className="mt-4 text-muted-foreground">
+        <Box sx={{ textAlign: "center", py: 8 }}>
+          <InventoryIcon color="disabled" sx={{ fontSize: 48 }} />
+          <Typography mt={1.5} color="text.secondary">
             No products yet. Add your first product!
-          </p>
-        </div>
+          </Typography>
+        </Box>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <Grid container spacing={2}>
           {filtered.map((product) => {
             const status = getStockStatus(product);
             return (
-              <Card key={product.id}>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg">{product.name}</CardTitle>
-                    <Badge variant={status.variant as any}>{status.label}</Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">SKU: {product.sku}</p>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Quantity</span>
-                    <span className="font-bold text-lg">{product.quantity}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Unit Cost</span>
-                    <span>₹{product.unit_cost}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Reorder At</span>
-                    <span>{product.reorder_point} units</span>
-                  </div>
-                  {product.category && (
-                    <Badge variant="outline">{product.category}</Badge>
-                  )}
-                  {product.expiry_date && (
-                    <p className="text-xs text-muted-foreground">
-                      Expires: {product.expiry_date}
-                    </p>
-                  )}
-                  <div className="flex gap-2 pt-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => updateQuantity(product.id, 1, "restock")}
-                    >
-                      + Restock
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => updateQuantity(product.id, -1, "sale")}
-                      disabled={product.quantity === 0}
-                    >
-                      - Sale
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
+              <Grid key={product.id} size={{ xs: 12, md: 6, lg: 4 }}>
+                <Card>
+                  <CardHeader
+                    title={product.name}
+                    subheader={`SKU: ${product.sku}`}
+                    sx={{ pb: 0.5 }}
+                    action={
+                      <Stack direction="row" alignItems="center" spacing={1}>
+                        <Chip
+                          label={status.label}
+                          color={status.color}
+                          size="small"
+                        />
+                        <IconButton
+                          size="small"
+                          onClick={() => openEditDialog(product)}
+                          aria-label={`Edit ${product.name}`}
+                        >
+                          <EditIcon fontSize="small" />
+                        </IconButton>
+                        <IconButton
+                          size="small"
+                          color="error"
+                          onClick={() => setDeleteId(product.id)}
+                        >
+                          <DeleteIcon fontSize="small" />
+                        </IconButton>
+                      </Stack>
+                    }
+                  />
+                  <CardContent>
+                    <Stack spacing={1}>
+                      <Stack direction="row" justifyContent="space-between">
+                        <Typography variant="body2" color="text.secondary">
+                          Quantity
+                        </Typography>
+                        <Typography variant="h6" fontWeight="bold">
+                          {product.quantity}
+                        </Typography>
+                      </Stack>
+                      <Stack direction="row" justifyContent="space-between">
+                        <Typography variant="body2" color="text.secondary">
+                          Unit Cost
+                        </Typography>
+                        <Typography variant="body2">
+                          ₹{product.unit_cost}
+                        </Typography>
+                      </Stack>
+                      <Stack direction="row" justifyContent="space-between">
+                        <Typography variant="body2" color="text.secondary">
+                          Reorder At
+                        </Typography>
+                        <Typography variant="body2">
+                          {product.reorder_point} units
+                        </Typography>
+                      </Stack>
+                      {product.category && (
+                        <Chip
+                          label={product.category}
+                          size="small"
+                          variant="outlined"
+                          sx={{ alignSelf: "flex-start" }}
+                        />
+                      )}
+                      {product.expiry_date && (
+                        <Typography variant="caption" color="text.secondary">
+                          Expires: {product.expiry_date}
+                        </Typography>
+                      )}
+                      <Stack direction="row" spacing={1} pt={1}>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          startIcon={<AddIcon />}
+                          onClick={() =>
+                            updateQuantity(product.id, 1, "restock")
+                          }
+                        >
+                          Restock
+                        </Button>
+                        <Button
+                          variant="outlined"
+                          size="small"
+                          color="error"
+                          startIcon={<RemoveIcon />}
+                          onClick={() =>
+                            updateQuantity(product.id, -1, "sale")
+                          }
+                          disabled={product.quantity === 0}
+                        >
+                          Sale
+                        </Button>
+                      </Stack>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              </Grid>
             );
           })}
-        </div>
+        </Grid>
       )}
-    </div>
+
+      {/* Add Product Dialog */}
+      <Dialog
+        open={open}
+        onClose={() => {
+          setOpen(false);
+          resetForm();
+        }}
+        fullWidth
+        maxWidth="sm"
+      >
+        <DialogTitle>
+          {editingProductId ? "Edit Product" : "Add New Product"}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} pt={1}>
+            <TextField
+              label="Product Name *"
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              size="small"
+            />
+            <TextField
+              label="SKU * (e.g. SKU-001)"
+              value={form.sku}
+              onChange={(e) => setForm({ ...form, sku: e.target.value })}
+              size="small"
+            />
+            <TextField
+              label="Category"
+              value={form.category}
+              onChange={(e) => setForm({ ...form, category: e.target.value })}
+              size="small"
+            />
+            <TextField
+              label="Initial Quantity"
+              type="number"
+              value={form.quantity || ""}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              size="small"
+            />
+            <TextField
+              label="Unit Cost (₹)"
+              type="number"
+              value={form.unit_cost || ""}
+              onChange={(e) => setForm({ ...form, unit_cost: e.target.value })}
+              size="small"
+            />
+            <TextField
+              label="Reorder Point (alert threshold)"
+              type="number"
+              value={form.reorder_point || ""}
+              onChange={(e) =>
+                setForm({ ...form, reorder_point: e.target.value })
+              }
+              size="small"
+            />
+            <Select
+              value={form.supplier_id}
+              onChange={(e) =>
+                setForm({ ...form, supplier_id: e.target.value })
+              }
+              displayEmpty
+              size="small"
+            >
+              <MenuItem value="">Select Supplier (optional)</MenuItem>
+              {vendors.map((v) => (
+                <MenuItem key={v.id} value={v.id}>
+                  {v.name}
+                </MenuItem>
+              ))}
+            </Select>
+            <TextField
+              label="Expiry Date (optional)"
+              type="date"
+              value={form.expiry_date}
+              onChange={(e) =>
+                setForm({ ...form, expiry_date: e.target.value })
+              }
+              size="small"
+              InputLabelProps={{ shrink: true }}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button
+            onClick={() => {
+              setOpen(false);
+              resetForm();
+            }}
+            color="inherit"
+          >
+            Cancel
+          </Button>
+          <Button variant="contained" onClick={() => void saveProduct()}>
+            {editingProductId ? "Update Product" : "Save Product"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <Dialog
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        maxWidth="xs"
+        fullWidth
+      >
+        <DialogTitle>Delete Product</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete this product? All stock movements
+            and alerts will also be deleted. This cannot be undone.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDeleteId(null)} color="inherit">
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={() => void deleteProduct()}
+          >
+            Delete
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Stack>
   );
 }

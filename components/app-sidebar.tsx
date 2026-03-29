@@ -1,18 +1,6 @@
 "use client";
 
 import {
-  Sidebar,
-  SidebarContent,
-  SidebarGroup,
-  SidebarGroupContent,
-  SidebarGroupLabel,
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-  SidebarHeader,
-  SidebarFooter,
-} from "@/components/ui/sidebar";
-import {
   LayoutDashboard,
   FileText,
   Receipt,
@@ -24,6 +12,17 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import {
+  Box,
+  Divider,
+  Drawer,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
+  Stack,
+  Typography,
+} from "@mui/material";
 
 const menuItems = [
   { title: "Dashboard", icon: LayoutDashboard, href: "/dashboard" },
@@ -36,37 +35,106 @@ const menuItems = [
   { title: "Settings", icon: Settings, href: "/dashboard/settings" },
 ];
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  mobileOpen: boolean;
+  onMobileClose: () => void;
+  drawerWidth?: number;
+}
+
+export function AppSidebar({
+  mobileOpen,
+  onMobileClose,
+  drawerWidth = 280,
+}: AppSidebarProps) {
   const pathname = usePathname();
 
+  const content = (
+    <Stack sx={{ height: "100%" }}>
+      <Box sx={{ px: 3, py: 3 }}>
+        <Typography variant="h6" sx={{ fontWeight: 800 }}>
+          SmartReceipt
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Business Manager
+        </Typography>
+      </Box>
+      <Divider />
+      <Box sx={{ px: 1.5, py: 2, flexGrow: 1 }}>
+        <Typography
+          variant="overline"
+          sx={{ px: 1.5, color: "text.secondary", letterSpacing: 1.2 }}
+        >
+          Navigation
+        </Typography>
+        <List>
+          {menuItems.map((item) => {
+            const active = pathname === item.href;
+            return (
+              <ListItemButton
+                key={item.title}
+                component={Link}
+                href={item.href}
+                selected={active}
+                onClick={onMobileClose}
+                sx={{
+                  borderRadius: 2,
+                  mb: 0.5,
+                  "&.Mui-selected": {
+                    bgcolor: "primary.main",
+                    color: "primary.contrastText",
+                    "& .MuiListItemIcon-root": {
+                      color: "primary.contrastText",
+                    },
+                  },
+                }}
+              >
+                <ListItemIcon sx={{ minWidth: 36 }}>
+                  <item.icon size={18} />
+                </ListItemIcon>
+                <ListItemText primary={item.title} />
+              </ListItemButton>
+            );
+          })}
+        </List>
+      </Box>
+      <Divider />
+      <Box sx={{ px: 3, py: 2 }}>
+        <Typography variant="caption" color="text.secondary">
+          © 2026 SmartReceipt
+        </Typography>
+      </Box>
+    </Stack>
+  );
+
   return (
-    <Sidebar>
-      <SidebarHeader className="p-6">
-        <h1 className="text-xl font-bold tracking-tight">SmartReceipt</h1>
-        <p className="text-xs text-muted-foreground">Business Manager</p>
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {menuItems.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton asChild isActive={pathname === item.href}>
-                    <Link href={item.href}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <SidebarFooter className="p-4">
-        <p className="text-xs text-muted-foreground">© 2025 SmartReceipt</p>
-      </SidebarFooter>
-    </Sidebar>
+    <>
+      <Drawer
+        variant="temporary"
+        open={mobileOpen}
+        onClose={onMobileClose}
+        ModalProps={{ keepMounted: true }}
+        sx={{
+          display: { xs: "block", md: "none" },
+          "& .MuiDrawer-paper": { width: drawerWidth },
+        }}
+      >
+        {content}
+      </Drawer>
+
+      <Drawer
+        variant="permanent"
+        open
+        sx={{
+          display: { xs: "none", md: "block" },
+          "& .MuiDrawer-paper": {
+            width: drawerWidth,
+            boxSizing: "border-box",
+            borderRight: "1px solid #e8edf3",
+          },
+        }}
+      >
+        {content}
+      </Drawer>
+    </>
   );
 }
