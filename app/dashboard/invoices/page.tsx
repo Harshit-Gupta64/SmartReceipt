@@ -6,6 +6,7 @@ import DescriptionIcon from "@mui/icons-material/Description";
 import EditIcon from "@mui/icons-material/Edit";
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -29,7 +30,7 @@ import {
 } from "@mui/material";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type InvoiceRow = {
   id: string;
@@ -56,13 +57,32 @@ type ItemRow = {
   unit_price: number;
 };
 
+type ImportResult = {
+  severity: "success" | "warning" | "error";
+  message: string;
+  details?: string[];
+};
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function invoiceCompletenessScore(invoice: InvoiceRow): number {
+  const statusRank = invoice.status === "paid" ? 2 : invoice.status === "overdue" ? 1 : 0;
+  return [invoice.notes, invoice.due_date, invoice.client_id].filter(Boolean).length + statusRank;
+}
+
 export default function InvoicesPage() {
   const { user } = useUser();
   const userId = user?.id;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [open, setOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editInvoice, setEditInvoice] = useState<InvoiceRow | null>(null);
@@ -206,6 +226,361 @@ export default function InvoicesPage() {
     void fetchInvoices();
   }
 
+  async function importInvoicesFromFile(file: File) {
+    if (!userId) return;
+
+    setImporting(true);
+    setImportResult(null);
+
+    try {
+      const XLSX = await import("xlsx");
+      const fileBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(fileBuffer, { type: "array", cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        setImportResult({
+          severity: "error",
+          message: "The uploaded file does not contain any sheet.",
+        });
+        return;
+      }
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
+        workbook.Sheets[firstSheetName],
+        { defval: "" }
+      );
+
+      if (rows.length === 0) {
+        setImportResult({
+          severity: "warning",
+          message: "No rows found in file.",
+        });
+        return;
+      }
+
+      const clientsByName = new Map(
+        clients.map((client) => [client.name.toLowerCase().trim(), client.id])
+      );
+
+      const parseNumber = (value: unknown, fallback = 0): number => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : fallback;
+      };
+
+      const parseDate = (value: unknown): string | null => {
+        if (value === null || value === undefined || value === "") return null;
+
+        if (typeof value === "number") {
+          const parsed = XLSX.SSF.parse_date_code(value);
+          if (!parsed) return null;
+          const month = String(parsed.m).padStart(2, "0");
+          const day = String(parsed.d).padStart(2, "0");
+          return `${parsed.y}-${month}-${day}`;
+        }
+
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+          return value.toISOString().slice(0, 10);
+        }
+
+        const text = String(value).trim();
+        if (!text) return null;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+        const parsedDate = new Date(text);
+        if (Number.isNaN(parsedDate.getTime())) return null;
+        return parsedDate.toISOString().slice(0, 10);
+      };
+
+      const findOrCreateClientId = async (rawName: unknown) => {
+        const clientName = String(rawName || "").trim();
+        if (!clientName) return null;
+
+        const key = clientName.toLowerCase();
+        const cachedId = clientsByName.get(key);
+        if (cachedId) return cachedId;
+
+        const { data: existingClient } = await supabase
+          .from("clients")
+          .select("id, name")
+          .eq("user_id", userId)
+          .ilike("name", clientName)
+          .maybeSingle();
+
+        if (existingClient?.id) {
+          clientsByName.set(key, existingClient.id);
+          return existingClient.id;
+        }
+
+        const { data: createdClient, error: createClientError } = await supabase
+          .from("clients")
+          .insert({
+            user_id: userId,
+            name: clientName,
+          })
+          .select("id, name")
+          .single();
+
+        if (!createClientError && createdClient?.id) {
+          clientsByName.set(key, createdClient.id);
+          return createdClient.id;
+        }
+
+        return null;
+      };
+
+      let insertedCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        const normalized = Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
+        );
+
+        const invoiceNumberRaw = String(
+          normalized.invoice_number || normalized.invoice || normalized.invoice_no || ""
+        ).trim();
+        const clientName = String(
+          normalized.client || normalized.client_name || normalized.customer || ""
+        ).trim();
+
+        const total = parseNumber(normalized.total ?? normalized.amount ?? normalized.invoice_total);
+        if (!clientName || total <= 0) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: Missing client or invalid total amount.`);
+          }
+          continue;
+        }
+
+        const clientId = await findOrCreateClientId(clientName);
+        if (!clientId) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: Could not resolve client \"${clientName}\".`);
+          }
+          continue;
+        }
+
+        const subtotalValue = parseNumber(normalized.subtotal, total);
+        const taxValue = parseNumber(normalized.tax, Math.max(total - subtotalValue, 0));
+        const status = String(normalized.status || "unpaid").trim().toLowerCase() || "unpaid";
+
+        const payload = {
+          user_id: userId,
+          client_id: clientId,
+          invoice_number:
+            invoiceNumberRaw || `INV-${Date.now()}-${String(index + 1).padStart(3, "0")}`,
+          due_date: parseDate(normalized.due_date ?? normalized.due ?? normalized.duedate),
+          notes: String(normalized.notes || normalized.note || "").trim() || null,
+          subtotal: subtotalValue,
+          tax: taxValue,
+          total,
+          status: status === "paid" || status === "overdue" ? status : "unpaid",
+        };
+
+        const { error } = await supabase.from("invoices").insert(payload);
+        if (error) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: ${error.message}`);
+          }
+          continue;
+        }
+
+        insertedCount += 1;
+      }
+
+      if (insertedCount > 0) {
+        void fetchInvoices();
+        void fetchClients();
+      }
+
+      if (insertedCount > 0 && failedCount === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Imported ${insertedCount} invoices successfully.`,
+        });
+      } else if (insertedCount > 0 && failedCount > 0) {
+        setImportResult({
+          severity: "warning",
+          message: `Imported ${insertedCount} invoices. ${failedCount} row(s) failed.`,
+          details: errors,
+        });
+      } else {
+        setImportResult({
+          severity: "error",
+          message: "Import failed. No invoices were added.",
+          details: errors.length > 0 ? errors : ["Check column names and data values."],
+        });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Failed to read file. Use a valid .xlsx, .xls, or .csv file.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function cleanupDuplicateInvoices() {
+    if (!userId || cleaning) return;
+
+    const shouldContinue = window.confirm(
+      "This will merge duplicate invoices by invoice number, relink invoice items, and permanently delete extra duplicate invoice rows. Continue?"
+    );
+    if (!shouldContinue) return;
+
+    setCleaning(true);
+    setImportResult(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("invoices")
+        .select("id, invoice_number, status, due_date, total, subtotal, tax, notes, client_id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        setImportResult({ severity: "error", message: error.message });
+        return;
+      }
+
+      const allInvoices = (data as InvoiceRow[]) || [];
+      const groups = new Map<string, InvoiceRow[]>();
+
+      for (const invoice of allInvoices) {
+        const key = invoice.invoice_number.trim().toLowerCase();
+        if (!key) continue;
+        const current = groups.get(key) || [];
+        current.push(invoice);
+        groups.set(key, current);
+      }
+
+      let mergedGroups = 0;
+      let deletedRows = 0;
+      let failedGroups = 0;
+      const errors: string[] = [];
+
+      for (const group of groups.values()) {
+        if (group.length < 2) continue;
+
+        const sorted = [...group].sort(
+          (a, b) => invoiceCompletenessScore(b) - invoiceCompletenessScore(a)
+        );
+        const primary = sorted[0];
+        const duplicates = sorted.slice(1);
+
+        const mergedPatch = {
+          status:
+            primary.status === "paid"
+              ? "paid"
+              : duplicates.some((inv) => inv.status === "paid")
+                ? "paid"
+                : primary.status,
+          due_date: primary.due_date || duplicates.map((inv) => inv.due_date).find(Boolean) || null,
+          notes: primary.notes || duplicates.map((inv) => inv.notes).find(Boolean) || null,
+          subtotal:
+            primary.subtotal > 0
+              ? primary.subtotal
+              : duplicates.map((inv) => inv.subtotal).find((value) => value > 0) || 0,
+          tax:
+            primary.tax > 0
+              ? primary.tax
+              : duplicates.map((inv) => inv.tax).find((value) => value > 0) || 0,
+          total:
+            primary.total > 0
+              ? primary.total
+              : duplicates.map((inv) => inv.total).find((value) => value > 0) || 0,
+          client_id: primary.client_id || duplicates.map((inv) => inv.client_id).find(Boolean) || null,
+        };
+
+        const { error: patchError } = await supabase
+          .from("invoices")
+          .update(mergedPatch)
+          .eq("id", primary.id)
+          .eq("user_id", userId);
+
+        if (patchError) {
+          failedGroups += 1;
+          if (errors.length < 6) {
+            errors.push(`Could not patch invoice ${primary.invoice_number}: ${patchError.message}`);
+          }
+          continue;
+        }
+
+        let groupFailed = false;
+        for (const duplicate of duplicates) {
+          const { error: itemsUpdateError } = await supabase
+            .from("invoice_items")
+            .update({ invoice_id: primary.id })
+            .eq("invoice_id", duplicate.id);
+
+          if (itemsUpdateError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(
+                `Could not relink invoice items for ${duplicate.invoice_number}: ${itemsUpdateError.message}`
+              );
+            }
+            break;
+          }
+
+          const { error: deleteError } = await supabase
+            .from("invoices")
+            .delete()
+            .eq("id", duplicate.id)
+            .eq("user_id", userId);
+
+          if (deleteError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(
+                `Could not delete duplicate ${duplicate.invoice_number}: ${deleteError.message}`
+              );
+            }
+            break;
+          }
+
+          deletedRows += 1;
+        }
+
+        if (groupFailed) {
+          failedGroups += 1;
+        } else {
+          mergedGroups += 1;
+        }
+      }
+
+      void fetchInvoices();
+
+      if (mergedGroups > 0 && failedGroups === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Cleanup complete. Merged ${mergedGroups} duplicate group(s), removed ${deletedRows} duplicate row(s).`,
+        });
+      } else if (mergedGroups > 0 || failedGroups > 0) {
+        setImportResult({
+          severity: failedGroups > 0 ? "warning" : "success",
+          message: `Cleanup finished. Merged ${mergedGroups} group(s), failed ${failedGroups} group(s), removed ${deletedRows} duplicate row(s).`,
+          details: errors,
+        });
+      } else {
+        setImportResult({ severity: "success", message: "No duplicate invoices found." });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Invoice cleanup failed due to an unexpected error.",
+      });
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   function getStatusColor(
     status: string
   ): "success" | "error" | "warning" | "default" {
@@ -235,13 +610,43 @@ export default function InvoicesPage() {
             Create and track your invoices
           </Typography>
         </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setOpen(true)}
-        >
-          New Invoice
-        </Button>
+        <Stack direction="row" spacing={1.25}>
+          <Button
+            variant="outlined"
+            color="warning"
+            onClick={() => void cleanupDuplicateInvoices()}
+            disabled={cleaning || importing}
+          >
+            {cleaning ? "Cleaning..." : "Cleanup Duplicates"}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+          >
+            {importing ? "Importing..." : "Import Sheet"}
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setOpen(true)}
+          >
+            New Invoice
+          </Button>
+        </Stack>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void importInvoicesFromFile(file);
+            }
+            event.target.value = "";
+          }}
+        />
       </Stack>
 
       <TextField
@@ -258,6 +663,19 @@ export default function InvoicesPage() {
           ),
         }}
       />
+
+      {importResult ? (
+        <Alert severity={importResult.severity}>
+          <Typography variant="body2" fontWeight={600}>
+            {importResult.message}
+          </Typography>
+          {importResult.details?.map((detail) => (
+            <Typography key={detail} variant="caption" component="div">
+              {detail}
+            </Typography>
+          ))}
+        </Alert>
+      ) : null}
 
       {loading ? (
         <Grid container spacing={2}>

@@ -6,6 +6,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import ReceiptIcon from "@mui/icons-material/Receipt";
 import SearchIcon from "@mui/icons-material/Search";
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -28,7 +29,7 @@ import {
 } from "@mui/material";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const CATEGORIES = [
   "Rent",
@@ -56,13 +57,36 @@ type VendorRow = {
   name: string;
 };
 
+type ImportResult = {
+  severity: "success" | "warning" | "error";
+  message: string;
+  details?: string[];
+};
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function expenseCompletenessScore(expense: ExpenseRow): number {
+  return [
+    expense.vendor_id,
+    expense.notes,
+    expense.expense_date,
+    expense.category,
+  ].filter(Boolean).length;
+}
+
 export default function ExpensesPage() {
   const { user } = useUser();
   const userId = user?.id;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [expenses, setExpenses] = useState<ExpenseRow[]>([]);
   const [vendors, setVendors] = useState<VendorRow[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [open, setOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editExpense, setEditExpense] = useState<ExpenseRow | null>(null);
@@ -163,6 +187,324 @@ export default function ExpensesPage() {
     void fetchExpenses();
   }
 
+  async function importExpensesFromFile(file: File) {
+    if (!userId) return;
+
+    setImporting(true);
+    setImportResult(null);
+
+    try {
+      const XLSX = await import("xlsx");
+      const fileBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(fileBuffer, { type: "array", cellDates: true });
+      const firstSheetName = workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        setImportResult({
+          severity: "error",
+          message: "The uploaded file does not contain any sheet.",
+        });
+        return;
+      }
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
+        workbook.Sheets[firstSheetName],
+        { defval: "" }
+      );
+
+      if (rows.length === 0) {
+        setImportResult({
+          severity: "warning",
+          message: "No rows found in file.",
+        });
+        return;
+      }
+
+      const vendorByName = new Map(
+        vendors.map((vendor) => [vendor.name.toLowerCase().trim(), vendor.id])
+      );
+
+      const findOrCreateVendorId = async (rawVendorName: unknown) => {
+        const vendorName = String(rawVendorName || "").trim();
+        if (!vendorName) return null;
+
+        const key = vendorName.toLowerCase();
+        const cachedId = vendorByName.get(key);
+        if (cachedId) return cachedId;
+
+        const { data: existingVendor } = await supabase
+          .from("vendors")
+          .select("id, name")
+          .eq("user_id", userId)
+          .ilike("name", vendorName)
+          .maybeSingle();
+
+        if (existingVendor?.id) {
+          vendorByName.set(key, existingVendor.id);
+          return existingVendor.id;
+        }
+
+        const { data: createdVendor, error: createVendorError } = await supabase
+          .from("vendors")
+          .insert({
+            user_id: userId,
+            name: vendorName,
+          })
+          .select("id, name")
+          .single();
+
+        if (!createVendorError && createdVendor?.id) {
+          vendorByName.set(key, createdVendor.id);
+          return createdVendor.id;
+        }
+
+        return null;
+      };
+
+      const parseNumber = (value: unknown, fallback = 0): number => {
+        const num = Number(value);
+        return Number.isFinite(num) ? num : fallback;
+      };
+
+      const parseDate = (value: unknown): string | null => {
+        if (value === null || value === undefined || value === "") return null;
+
+        if (typeof value === "number") {
+          const parsed = XLSX.SSF.parse_date_code(value);
+          if (!parsed) return null;
+          const month = String(parsed.m).padStart(2, "0");
+          const day = String(parsed.d).padStart(2, "0");
+          return `${parsed.y}-${month}-${day}`;
+        }
+
+        if (value instanceof Date && !Number.isNaN(value.getTime())) {
+          return value.toISOString().slice(0, 10);
+        }
+
+        const text = String(value).trim();
+        if (!text) return null;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+
+        const parsedDate = new Date(text);
+        if (Number.isNaN(parsedDate.getTime())) return null;
+        return parsedDate.toISOString().slice(0, 10);
+      };
+
+      let insertedCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        const normalized = Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
+        );
+
+        const title = String(
+          normalized.title || normalized.expense_title || normalized.name || ""
+        ).trim();
+        const amount = parseNumber(normalized.amount ?? normalized.value);
+        const rawCategory = String(
+          normalized.category || normalized.expense_category || ""
+        ).trim();
+        const category = rawCategory || "Miscellaneous";
+
+        if (!title || amount <= 0) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: Missing title or invalid amount.`);
+          }
+          continue;
+        }
+
+        const vendorText = String(
+          normalized.vendor || normalized.vendor_name || normalized.supplier || ""
+        ).trim();
+        const vendorId = await findOrCreateVendorId(vendorText);
+
+        const payload = {
+          user_id: userId,
+          title,
+          amount,
+          category,
+          expense_date: parseDate(
+            normalized.expense_date ?? normalized.date ?? normalized.expensedate
+          ),
+          vendor_id: vendorId,
+          notes: String(normalized.notes || normalized.note || "").trim() || null,
+        };
+
+        const { error } = await supabase.from("expenses").insert(payload);
+        if (error) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: ${error.message}`);
+          }
+          continue;
+        }
+
+        insertedCount += 1;
+      }
+
+      if (insertedCount > 0) {
+        void fetchExpenses();
+      }
+
+      if (insertedCount > 0 && failedCount === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Imported ${insertedCount} expenses successfully.`,
+        });
+      } else if (insertedCount > 0 && failedCount > 0) {
+        setImportResult({
+          severity: "warning",
+          message: `Imported ${insertedCount} expenses. ${failedCount} row(s) failed.`,
+          details: errors,
+        });
+      } else {
+        setImportResult({
+          severity: "error",
+          message: "Import failed. No expenses were added.",
+          details: errors.length > 0 ? errors : ["Check column names and data values."],
+        });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Failed to read file. Use a valid .xlsx, .xls, or .csv file.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function cleanupDuplicateExpenses() {
+    if (!userId || cleaning) return;
+
+    const shouldContinue = window.confirm(
+      "This will merge duplicate expenses and permanently delete extra duplicate rows. Continue?"
+    );
+    if (!shouldContinue) return;
+
+    setCleaning(true);
+    setImportResult(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("expenses")
+        .select("id, title, amount, category, expense_date, notes, vendor_id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        setImportResult({ severity: "error", message: error.message });
+        return;
+      }
+
+      const allExpenses = (data as ExpenseRow[]) || [];
+      const groups = new Map<string, ExpenseRow[]>();
+
+      for (const expense of allExpenses) {
+        const key = [
+          expense.title.trim().toLowerCase(),
+          Number(expense.amount).toFixed(2),
+          expense.expense_date || "",
+          expense.vendor_id || "",
+        ].join("|");
+        if (!key) continue;
+        const current = groups.get(key) || [];
+        current.push(expense);
+        groups.set(key, current);
+      }
+
+      let mergedGroups = 0;
+      let deletedRows = 0;
+      let failedGroups = 0;
+      const errors: string[] = [];
+
+      for (const group of groups.values()) {
+        if (group.length < 2) continue;
+
+        const sorted = [...group].sort(
+          (a, b) => expenseCompletenessScore(b) - expenseCompletenessScore(a)
+        );
+        const primary = sorted[0];
+        const duplicates = sorted.slice(1);
+
+        const mergedPatch = {
+          category: primary.category || duplicates.map((e) => e.category).find(Boolean) || "Miscellaneous",
+          expense_date:
+            primary.expense_date || duplicates.map((e) => e.expense_date).find(Boolean) || null,
+          vendor_id: primary.vendor_id || duplicates.map((e) => e.vendor_id).find(Boolean) || null,
+          notes: primary.notes || duplicates.map((e) => e.notes).find(Boolean) || null,
+        };
+
+        const { error: patchError } = await supabase
+          .from("expenses")
+          .update(mergedPatch)
+          .eq("id", primary.id)
+          .eq("user_id", userId);
+
+        if (patchError) {
+          failedGroups += 1;
+          if (errors.length < 6) {
+            errors.push(`Could not patch expense ${primary.title}: ${patchError.message}`);
+          }
+          continue;
+        }
+
+        let groupFailed = false;
+        for (const duplicate of duplicates) {
+          const { error: deleteError } = await supabase
+            .from("expenses")
+            .delete()
+            .eq("id", duplicate.id)
+            .eq("user_id", userId);
+
+          if (deleteError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(`Could not delete duplicate ${duplicate.title}: ${deleteError.message}`);
+            }
+            break;
+          }
+
+          deletedRows += 1;
+        }
+
+        if (groupFailed) {
+          failedGroups += 1;
+        } else {
+          mergedGroups += 1;
+        }
+      }
+
+      void fetchExpenses();
+
+      if (mergedGroups > 0 && failedGroups === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Cleanup complete. Merged ${mergedGroups} duplicate group(s), removed ${deletedRows} duplicate row(s).`,
+        });
+      } else if (mergedGroups > 0 || failedGroups > 0) {
+        setImportResult({
+          severity: failedGroups > 0 ? "warning" : "success",
+          message: `Cleanup finished. Merged ${mergedGroups} group(s), failed ${failedGroups} group(s), removed ${deletedRows} duplicate row(s).`,
+          details: errors,
+        });
+      } else {
+        setImportResult({ severity: "success", message: "No duplicate expenses found." });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Expense cleanup failed due to an unexpected error.",
+      });
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   const filtered = useMemo(
     () =>
       expenses.filter((e) =>
@@ -189,13 +531,43 @@ export default function ExpensesPage() {
             Track your business expenses
           </Typography>
         </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setOpen(true)}
-        >
-          Add Expense
-        </Button>
+        <Stack direction="row" spacing={1.25}>
+          <Button
+            variant="outlined"
+            color="warning"
+            onClick={() => void cleanupDuplicateExpenses()}
+            disabled={cleaning || importing}
+          >
+            {cleaning ? "Cleaning..." : "Cleanup Duplicates"}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+          >
+            {importing ? "Importing..." : "Import Sheet"}
+          </Button>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => setOpen(true)}
+          >
+            Add Expense
+          </Button>
+        </Stack>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void importExpensesFromFile(file);
+            }
+            event.target.value = "";
+          }}
+        />
       </Stack>
 
       {/* Total Expenses Card */}
@@ -224,6 +596,19 @@ export default function ExpensesPage() {
           ),
         }}
       />
+
+      {importResult ? (
+        <Alert severity={importResult.severity}>
+          <Typography variant="body2" fontWeight={600}>
+            {importResult.message}
+          </Typography>
+          {importResult.details?.map((detail) => (
+            <Typography key={detail} variant="caption" component="div">
+              {detail}
+            </Typography>
+          ))}
+        </Alert>
+      ) : null}
 
       {loading ? (
         <Grid container spacing={2}>

@@ -1,0 +1,6 @@
+title,amount,category,expense_date,vendor,notes
+Office Rent,25000,Rent,2026-03-01,,March office rent
+Meta Ads Campaign,5200,Marketing,2026-03-05,,Lead generation ads
+Diesel Refill,1800,Travel,2026-03-08,,Delivery vehicle fuel
+Printer Service,950,Utilities,2026-03-10,Print Hub,Quarterly maintenance
+Bulk Packaging Material,3400,Inventory Purchase,2026-03-12,Acme Supplies,Boxes and labels

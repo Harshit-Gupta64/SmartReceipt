@@ -172,13 +172,16 @@ export default function Home() {
 
       {/* Navbar */}
       <nav className="fixed top-0 z-50 w-full border-b border-white/8 bg-[#060914]/80 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
-          <Link href="/" className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-blue-500 shadow-lg shadow-cyan-500/25">
-              <Sparkles className="h-4 w-4 text-white" />
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 px-3 py-3 sm:px-6 sm:py-4">
+          <Link href="/" className="flex min-w-0 items-center gap-2 sm:gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-blue-500 shadow-lg shadow-cyan-500/25 sm:h-9 sm:w-9">
+              <Sparkles className="h-3.5 w-3.5 text-white sm:h-4 sm:w-4" />
             </div>
-            <span className="text-xl font-black tracking-tight">
-              Smart<span className="text-cyan-400">Receipt</span>
+            <span className="truncate text-lg font-black tracking-tight sm:text-xl">
+              <span className="sm:hidden">SmartR</span>
+              <span className="hidden sm:inline">
+                Smart<span className="text-cyan-400">Receipt</span>
+              </span>
             </span>
           </Link>
 
@@ -194,12 +197,13 @@ export default function Home() {
             </a>
           </div>
 
-          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.97 }}>
+          <motion.div whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.97 }} className="shrink-0">
             <Link
               href="/dashboard"
-              className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-cyan-500/25 transition hover:opacity-90"
+              className="inline-flex items-center whitespace-nowrap rounded-lg bg-gradient-to-r from-cyan-500 to-blue-500 px-3 py-2 text-xs font-bold text-white shadow-lg shadow-cyan-500/25 transition hover:opacity-90 sm:rounded-xl sm:px-5 sm:py-2.5 sm:text-sm"
             >
-              Get Started →
+              <span className="sm:hidden">Start</span>
+              <span className="hidden sm:inline">Get Started →</span>
             </Link>
           </motion.div>
         </div>

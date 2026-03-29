@@ -1,0 +1,6 @@
+name,sku,category,quantity,unit_cost,reorder_point,expiry_date,supplier
+Wireless Mouse,SKU-1001,Electronics,25,499,8,,Acme Supplies
+A4 Paper Ream,SKU-1002,Office,120,260,30,,Paper World
+Printer Ink Black,SKU-1003,Office,18,850,10,,Print Hub
+Protein Bar Box,SKU-1004,Food,40,799,12,2026-12-31,Fresh Foods
+Cleaning Spray,SKU-1005,Housekeeping,14,199,6,2027-05-15,CleanMart

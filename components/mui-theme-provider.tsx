@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  CssBaseline,
   PaletteMode,
   ThemeProvider,
   createTheme,
@@ -96,17 +95,6 @@ export default function MuiThemeProvider({
           },
         },
         components: {
-          MuiCssBaseline: {
-            styleOverrides: {
-              body: {
-                transition: "background-color 250ms ease, color 250ms ease",
-                background:
-                  mode === "light"
-                    ? "radial-gradient(1200px circle at 10% -10%, rgba(14,165,233,0.12), transparent 55%), radial-gradient(900px circle at 100% 10%, rgba(249,115,22,0.10), transparent 45%), radial-gradient(700px circle at 50% 120%, rgba(16,185,129,0.08), transparent 40%), #f8fbff"
-                    : "radial-gradient(1200px circle at 10% -10%, rgba(34,211,238,0.12), transparent 55%), radial-gradient(900px circle at 100% 10%, rgba(251,191,36,0.12), transparent 45%), #060914",
-              },
-            },
-          },
           MuiCard: {
             styleOverrides: {
               root: {
@@ -171,7 +159,6 @@ export default function MuiThemeProvider({
   return (
     <ColorModeContext.Provider value={colorModeValue}>
       <ThemeProvider theme={theme}>
-        <CssBaseline />
         {children}
       </ThemeProvider>
     </ColorModeContext.Provider>

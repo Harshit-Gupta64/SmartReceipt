@@ -6,6 +6,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import SearchIcon from "@mui/icons-material/Search";
 import StoreIcon from "@mui/icons-material/Store";
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -26,7 +27,7 @@ import {
 } from "@mui/material";
 import { supabase } from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type VendorRow = {
   id: string;
@@ -36,12 +37,46 @@ type VendorRow = {
   address: string | null;
 };
 
+type ImportResult = {
+  severity: "success" | "warning" | "error";
+  message: string;
+  details?: string[];
+};
+
+function normalizeHeader(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
+function vendorCompletenessScore(vendor: VendorRow): number {
+  return [vendor.email, vendor.phone, vendor.address].filter(Boolean).length;
+}
+
+function dedupeVendorsByName(rows: VendorRow[]): VendorRow[] {
+  const byName = new Map<string, VendorRow>();
+
+  for (const row of rows) {
+    const key = row.name.trim().toLowerCase();
+    if (!key) continue;
+
+    const existing = byName.get(key);
+    if (!existing || vendorCompletenessScore(row) > vendorCompletenessScore(existing)) {
+      byName.set(key, row);
+    }
+  }
+
+  return Array.from(byName.values());
+}
+
 export default function VendorsPage() {
   const { user } = useUser();
   const userId = user?.id;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [vendors, setVendors] = useState<VendorRow[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [importing, setImporting] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [open, setOpen] = useState(false);
   const [editVendor, setEditVendor] = useState<VendorRow | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -61,7 +96,8 @@ export default function VendorsPage() {
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
-    setVendors((data as VendorRow[]) || []);
+    const typedVendors = (data as VendorRow[]) || [];
+    setVendors(dedupeVendorsByName(typedVendors));
     setLoading(false);
   }, [userId]);
 
@@ -136,6 +172,320 @@ export default function VendorsPage() {
   void fetchVendors();
 }
 
+  async function importVendorsFromFile(file: File) {
+    if (!userId) return;
+
+    setImporting(true);
+    setImportResult(null);
+
+    try {
+      const XLSX = await import("xlsx");
+      const fileBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(fileBuffer, { type: "array" });
+      const firstSheetName = workbook.SheetNames[0];
+
+      if (!firstSheetName) {
+        setImportResult({
+          severity: "error",
+          message: "The uploaded file does not contain any sheet.",
+        });
+        return;
+      }
+
+      const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(
+        workbook.Sheets[firstSheetName],
+        { defval: "" }
+      );
+
+      if (rows.length === 0) {
+        setImportResult({
+          severity: "warning",
+          message: "No rows found in file.",
+        });
+        return;
+      }
+
+      let insertedCount = 0;
+      let updatedCount = 0;
+      let failedCount = 0;
+      const errors: string[] = [];
+
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        const normalized = Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
+        );
+
+        const name = String(
+          normalized.name || normalized.vendor_name || normalized.business_name || ""
+        ).trim();
+
+        if (!name) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: Missing required vendor name.`);
+          }
+          continue;
+        }
+
+        const email = String(normalized.email || normalized.email_address || "").trim() || null;
+        const phone = String(normalized.phone || normalized.phone_number || "").trim() || null;
+        const address = String(normalized.address || "").trim() || null;
+
+        const { data: existingVendor, error: findError } = await supabase
+          .from("vendors")
+          .select("id, email, phone, address")
+          .eq("user_id", userId)
+          .ilike("name", name)
+          .maybeSingle();
+
+        if (findError) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: ${findError.message}`);
+          }
+          continue;
+        }
+
+        if (existingVendor?.id) {
+          const patch = {
+            email: email || existingVendor.email,
+            phone: phone || existingVendor.phone,
+            address: address || existingVendor.address,
+          };
+
+          const { error: updateError } = await supabase
+            .from("vendors")
+            .update(patch)
+            .eq("id", existingVendor.id);
+
+          if (updateError) {
+            failedCount += 1;
+            if (errors.length < 6) {
+              errors.push(`Row ${index + 2}: ${updateError.message}`);
+            }
+            continue;
+          }
+
+          updatedCount += 1;
+          continue;
+        }
+
+        const payload = {
+          user_id: userId,
+          name,
+          email,
+          phone,
+          address,
+        };
+
+        const { error } = await supabase.from("vendors").insert(payload);
+        if (error) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: ${error.message}`);
+          }
+          continue;
+        }
+
+        insertedCount += 1;
+      }
+
+      if (insertedCount > 0 || updatedCount > 0) {
+        void fetchVendors();
+      }
+
+      if (insertedCount + updatedCount > 0 && failedCount === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Imported ${insertedCount} vendors and updated ${updatedCount}.`,
+        });
+      } else if (insertedCount + updatedCount > 0 && failedCount > 0) {
+        setImportResult({
+          severity: "warning",
+          message: `Imported ${insertedCount}, updated ${updatedCount}. ${failedCount} row(s) failed.`,
+          details: errors,
+        });
+      } else {
+        setImportResult({
+          severity: "error",
+          message: "Import failed. No vendors were added.",
+          details: errors.length > 0 ? errors : ["Check column names and data values."],
+        });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Failed to read file. Use a valid .xlsx, .xls, or .csv file.",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function cleanupDuplicateVendors() {
+    if (!userId || cleaning) return;
+
+    const shouldContinue = window.confirm(
+      "This will merge duplicate vendors by name, re-link expenses/products, and permanently delete extra duplicate rows. Continue?"
+    );
+    if (!shouldContinue) return;
+
+    setCleaning(true);
+    setImportResult(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("vendors")
+        .select("id, name, email, phone, address")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        setImportResult({ severity: "error", message: error.message });
+        return;
+      }
+
+      const allVendors = (data as VendorRow[]) || [];
+      const groups = new Map<string, VendorRow[]>();
+
+      for (const vendor of allVendors) {
+        const key = vendor.name.trim().toLowerCase();
+        if (!key) continue;
+        const current = groups.get(key) || [];
+        current.push(vendor);
+        groups.set(key, current);
+      }
+
+      let mergedGroups = 0;
+      let deletedRows = 0;
+      let failedGroups = 0;
+      const errors: string[] = [];
+
+      for (const [key, group] of groups.entries()) {
+        if (group.length < 2) continue;
+
+        const sorted = [...group].sort(
+          (a, b) => vendorCompletenessScore(b) - vendorCompletenessScore(a)
+        );
+        const primary = sorted[0];
+        const duplicates = sorted.slice(1);
+
+        const mergedPatch = {
+          email:
+            primary.email ||
+            duplicates.map((v) => v.email).find(Boolean) ||
+            null,
+          phone:
+            primary.phone ||
+            duplicates.map((v) => v.phone).find(Boolean) ||
+            null,
+          address:
+            primary.address ||
+            duplicates.map((v) => v.address).find(Boolean) ||
+            null,
+        };
+
+        const { error: patchError } = await supabase
+          .from("vendors")
+          .update(mergedPatch)
+          .eq("id", primary.id);
+
+        if (patchError) {
+          failedGroups += 1;
+          if (errors.length < 6) {
+            errors.push(`Could not patch vendor ${primary.name}: ${patchError.message}`);
+          }
+          continue;
+        }
+
+        let groupFailed = false;
+        for (const duplicate of duplicates) {
+          const { error: expenseUpdateError } = await supabase
+            .from("expenses")
+            .update({ vendor_id: primary.id })
+            .eq("vendor_id", duplicate.id)
+            .eq("user_id", userId);
+
+          if (expenseUpdateError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(
+                `Could not relink expenses for ${duplicate.name}: ${expenseUpdateError.message}`
+              );
+            }
+            break;
+          }
+
+          const { error: productUpdateError } = await supabase
+            .from("products")
+            .update({ supplier_id: primary.id })
+            .eq("supplier_id", duplicate.id)
+            .eq("user_id", userId);
+
+          if (productUpdateError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(
+                `Could not relink products for ${duplicate.name}: ${productUpdateError.message}`
+              );
+            }
+            break;
+          }
+
+          const { error: deleteError } = await supabase
+            .from("vendors")
+            .delete()
+            .eq("id", duplicate.id)
+            .eq("user_id", userId);
+
+          if (deleteError) {
+            groupFailed = true;
+            if (errors.length < 6) {
+              errors.push(`Could not delete duplicate ${duplicate.name}: ${deleteError.message}`);
+            }
+            break;
+          }
+
+          deletedRows += 1;
+        }
+
+        if (groupFailed) {
+          failedGroups += 1;
+        } else {
+          mergedGroups += 1;
+        }
+      }
+
+      void fetchVendors();
+
+      if (mergedGroups > 0 && failedGroups === 0) {
+        setImportResult({
+          severity: "success",
+          message: `Cleanup complete. Merged ${mergedGroups} duplicate group(s), removed ${deletedRows} duplicate row(s).`,
+        });
+      } else if (mergedGroups > 0 || failedGroups > 0) {
+        setImportResult({
+          severity: failedGroups > 0 ? "warning" : "success",
+          message: `Cleanup finished. Merged ${mergedGroups} group(s), failed ${failedGroups} group(s), removed ${deletedRows} duplicate row(s).`,
+          details: errors,
+        });
+      } else {
+        setImportResult({
+          severity: "success",
+          message: "No duplicate vendors found.",
+        });
+      }
+    } catch {
+      setImportResult({
+        severity: "error",
+        message: "Vendor cleanup failed due to an unexpected error.",
+      });
+    } finally {
+      setCleaning(false);
+    }
+  }
+
   const filtered = useMemo(
     () => vendors.filter((v) => v.name.toLowerCase().includes(search.toLowerCase())),
     [vendors, search]
@@ -148,9 +498,39 @@ export default function VendorsPage() {
           <Typography variant="h4">Vendors</Typography>
           <Typography color="text.secondary">Manage your vendors and suppliers</Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
-          Add Vendor
-        </Button>
+        <Stack direction="row" spacing={1.25}>
+          <Button
+            variant="outlined"
+            color="warning"
+            onClick={() => void cleanupDuplicateVendors()}
+            disabled={cleaning || importing}
+          >
+            {cleaning ? "Cleaning..." : "Cleanup Duplicates"}
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+          >
+            {importing ? "Importing..." : "Import Sheet"}
+          </Button>
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
+            Add Vendor
+          </Button>
+        </Stack>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) {
+              void importVendorsFromFile(file);
+            }
+            event.target.value = "";
+          }}
+        />
       </Stack>
 
       <TextField
@@ -167,6 +547,19 @@ export default function VendorsPage() {
           ),
         }}
       />
+
+      {importResult ? (
+        <Alert severity={importResult.severity}>
+          <Typography variant="body2" fontWeight={600}>
+            {importResult.message}
+          </Typography>
+          {importResult.details?.map((detail) => (
+            <Typography key={detail} variant="caption" component="div">
+              {detail}
+            </Typography>
+          ))}
+        </Alert>
+      ) : null}
 
       {loading ? (
         <Grid container spacing={2}>
