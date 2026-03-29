@@ -330,8 +330,19 @@ export default function InvoicesPage() {
       };
 
       let insertedCount = 0;
+      let updatedCount = 0;
+      let adjustedNumberCount = 0;
       let failedCount = 0;
       const errors: string[] = [];
+
+      const isInvoiceNumberDuplicateError = (message?: string) =>
+        (message || "").toLowerCase().includes("invoices_invoice_number_key") ||
+        (message || "").toLowerCase().includes("duplicate key value");
+
+      const userSuffix = String(userId || "user")
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .slice(-6)
+        .toUpperCase() || "USER";
 
       for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index];
@@ -368,11 +379,13 @@ export default function InvoicesPage() {
         const taxValue = parseNumber(normalized.tax, Math.max(total - subtotalValue, 0));
         const status = String(normalized.status || "unpaid").trim().toLowerCase() || "unpaid";
 
+        const baseInvoiceNumber =
+          invoiceNumberRaw || `INV-${Date.now()}-${String(index + 1).padStart(3, "0")}`;
+
         const payload = {
           user_id: userId,
           client_id: clientId,
-          invoice_number:
-            invoiceNumberRaw || `INV-${Date.now()}-${String(index + 1).padStart(3, "0")}`,
+          invoice_number: baseInvoiceNumber,
           due_date: parseDate(normalized.due_date ?? normalized.due ?? normalized.duedate),
           notes: String(normalized.notes || normalized.note || "").trim() || null,
           subtotal: subtotalValue,
@@ -381,32 +394,145 @@ export default function InvoicesPage() {
           status: status === "paid" || status === "overdue" ? status : "unpaid",
         };
 
-        const { error } = await supabase.from("invoices").insert(payload);
-        if (error) {
+        const { data: existingInvoice, error: findError } = await supabase
+          .from("invoices")
+          .select("id")
+          .eq("user_id", userId)
+          .ilike("invoice_number", payload.invoice_number)
+          .limit(1)
+          .maybeSingle();
+
+        if (findError) {
           failedCount += 1;
           if (errors.length < 6) {
-            errors.push(`Row ${index + 2}: ${error.message}`);
+            errors.push(`Row ${index + 2}: ${findError.message}`);
           }
           continue;
         }
 
-        insertedCount += 1;
+        if (existingInvoice?.id) {
+          const { error: updateError } = await supabase
+            .from("invoices")
+            .update({
+              client_id: payload.client_id,
+              due_date: payload.due_date,
+              notes: payload.notes,
+              subtotal: payload.subtotal,
+              tax: payload.tax,
+              total: payload.total,
+              status: payload.status,
+            })
+            .eq("id", existingInvoice.id)
+            .eq("user_id", userId);
+
+          if (updateError) {
+            failedCount += 1;
+            if (errors.length < 6) {
+              errors.push(`Row ${index + 2}: ${updateError.message}`);
+            }
+            continue;
+          }
+
+          updatedCount += 1;
+          continue;
+        }
+
+        const { error } = await supabase.from("invoices").insert(payload);
+        if (!error) {
+          insertedCount += 1;
+          continue;
+        }
+
+        if (isInvoiceNumberDuplicateError(error.message)) {
+          const { data: existingOwnedInvoice } = await supabase
+            .from("invoices")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("invoice_number", payload.invoice_number)
+            .maybeSingle();
+
+          if (existingOwnedInvoice?.id) {
+            const { error: updateError } = await supabase
+              .from("invoices")
+              .update({
+                client_id: payload.client_id,
+                due_date: payload.due_date,
+                notes: payload.notes,
+                subtotal: payload.subtotal,
+                tax: payload.tax,
+                total: payload.total,
+                status: payload.status,
+              })
+              .eq("id", existingOwnedInvoice.id)
+              .eq("user_id", userId);
+
+            if (!updateError) {
+              updatedCount += 1;
+              continue;
+            }
+
+            failedCount += 1;
+            if (errors.length < 6) {
+              errors.push(`Row ${index + 2}: ${updateError.message}`);
+            }
+            continue;
+          }
+
+          let adjustedSuccessfully = false;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const adjustedInvoiceNumber =
+              attempt === 0
+                ? `${baseInvoiceNumber}-${userSuffix}`
+                : `${baseInvoiceNumber}-${userSuffix}-${attempt + 1}`;
+
+            const { error: adjustedInsertError } = await supabase
+              .from("invoices")
+              .insert({ ...payload, invoice_number: adjustedInvoiceNumber });
+
+            if (!adjustedInsertError) {
+              adjustedNumberCount += 1;
+              adjustedSuccessfully = true;
+              if (errors.length < 6) {
+                errors.push(
+                  `Row ${index + 2}: Invoice ${baseInvoiceNumber} exists globally, imported as ${adjustedInvoiceNumber}.`
+                );
+              }
+              break;
+            }
+
+            if (!isInvoiceNumberDuplicateError(adjustedInsertError.message)) {
+              if (errors.length < 6) {
+                errors.push(`Row ${index + 2}: ${adjustedInsertError.message}`);
+              }
+              break;
+            }
+          }
+
+          if (adjustedSuccessfully) {
+            continue;
+          }
+        }
+
+        failedCount += 1;
+        if (errors.length < 6) {
+          errors.push(`Row ${index + 2}: ${error.message}`);
+        }
       }
 
-      if (insertedCount > 0) {
+      if (insertedCount > 0 || updatedCount > 0 || adjustedNumberCount > 0) {
         void fetchInvoices();
         void fetchClients();
       }
 
-      if (insertedCount > 0 && failedCount === 0) {
+      if (insertedCount + updatedCount + adjustedNumberCount > 0 && failedCount === 0) {
         setImportResult({
           severity: "success",
-          message: `Imported ${insertedCount} invoices successfully.`,
+          message: `Imported ${insertedCount}, updated ${updatedCount}, adjusted invoice number ${adjustedNumberCount}.`,
         });
-      } else if (insertedCount > 0 && failedCount > 0) {
+      } else if (insertedCount + updatedCount + adjustedNumberCount > 0 && failedCount > 0) {
         setImportResult({
           severity: "warning",
-          message: `Imported ${insertedCount} invoices. ${failedCount} row(s) failed.`,
+          message: `Imported ${insertedCount}, updated ${updatedCount}, adjusted invoice number ${adjustedNumberCount}. ${failedCount} row(s) failed.`,
           details: errors,
         });
       } else {

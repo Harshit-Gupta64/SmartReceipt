@@ -285,8 +285,19 @@ export default function InventoryPage() {
       };
 
       let insertedCount = 0;
+      let updatedCount = 0;
+      let adjustedSkuCount = 0;
       let failedCount = 0;
       const errors: string[] = [];
+
+      const isSkuDuplicateError = (message?: string) =>
+        (message || "").toLowerCase().includes("products_sku_key") ||
+        (message || "").toLowerCase().includes("duplicate key value");
+
+      const userSuffix = String(userId || "user")
+        .replace(/[^a-zA-Z0-9]/g, "")
+        .slice(-6)
+        .toUpperCase() || "USER";
 
       for (let index = 0; index < rows.length; index += 1) {
         const row = rows[index];
@@ -333,30 +344,100 @@ export default function InventoryPage() {
         };
 
         const { error } = await supabase.from("products").insert(payload);
-        if (error) {
-          failedCount += 1;
-          if (errors.length < 6) {
-            errors.push(`Row ${index + 2}: ${error.message}`);
-          }
+        if (!error) {
+          insertedCount += 1;
           continue;
         }
 
-        insertedCount += 1;
+        if (isSkuDuplicateError(error.message)) {
+          const { data: existingOwnedProduct } = await supabase
+            .from("products")
+            .select("id")
+            .eq("user_id", userId)
+            .eq("sku", sku)
+            .maybeSingle();
+
+          if (existingOwnedProduct?.id) {
+            const { error: updateError } = await supabase
+              .from("products")
+              .update({
+                name: payload.name,
+                category: payload.category,
+                quantity: payload.quantity,
+                unit_cost: payload.unit_cost,
+                reorder_point: payload.reorder_point,
+                expiry_date: payload.expiry_date,
+                supplier_id: payload.supplier_id,
+              })
+              .eq("id", existingOwnedProduct.id)
+              .eq("user_id", userId);
+
+            if (!updateError) {
+              updatedCount += 1;
+              continue;
+            }
+
+            failedCount += 1;
+            if (errors.length < 6) {
+              errors.push(`Row ${index + 2}: ${updateError.message}`);
+            }
+            continue;
+          }
+
+          let adjustedSuccessfully = false;
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            const adjustedSku =
+              attempt === 0
+                ? `${sku}-${userSuffix}`
+                : `${sku}-${userSuffix}-${attempt + 1}`;
+
+            const { error: adjustedInsertError } = await supabase
+              .from("products")
+              .insert({ ...payload, sku: adjustedSku });
+
+            if (!adjustedInsertError) {
+              adjustedSkuCount += 1;
+              adjustedSuccessfully = true;
+              if (errors.length < 6) {
+                errors.push(
+                  `Row ${index + 2}: SKU ${sku} already exists globally, imported as ${adjustedSku}.`
+                );
+              }
+              break;
+            }
+
+            if (!isSkuDuplicateError(adjustedInsertError.message)) {
+              if (errors.length < 6) {
+                errors.push(`Row ${index + 2}: ${adjustedInsertError.message}`);
+              }
+              break;
+            }
+          }
+
+          if (adjustedSuccessfully) {
+            continue;
+          }
+        }
+
+        failedCount += 1;
+        if (errors.length < 6) {
+          errors.push(`Row ${index + 2}: ${error.message}`);
+        }
       }
 
-      if (insertedCount > 0) {
+      if (insertedCount > 0 || updatedCount > 0 || adjustedSkuCount > 0) {
         void fetchProducts();
       }
 
-      if (insertedCount > 0 && failedCount === 0) {
+      if (insertedCount + updatedCount + adjustedSkuCount > 0 && failedCount === 0) {
         setImportResult({
           severity: "success",
-          message: `Imported ${insertedCount} products successfully.`,
+          message: `Imported ${insertedCount}, updated ${updatedCount}, adjusted SKU ${adjustedSkuCount}.`,
         });
-      } else if (insertedCount > 0 && failedCount > 0) {
+      } else if (insertedCount + updatedCount + adjustedSkuCount > 0 && failedCount > 0) {
         setImportResult({
           severity: "warning",
-          message: `Imported ${insertedCount} products. ${failedCount} row(s) failed.`,
+          message: `Imported ${insertedCount}, updated ${updatedCount}, adjusted SKU ${adjustedSkuCount}. ${failedCount} row(s) failed.`,
           details: errors,
         });
       } else {

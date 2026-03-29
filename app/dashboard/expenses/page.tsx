@@ -291,6 +291,7 @@ export default function ExpensesPage() {
       };
 
       let insertedCount = 0;
+      let updatedCount = 0;
       let failedCount = 0;
       const errors: string[] = [];
 
@@ -334,6 +335,59 @@ export default function ExpensesPage() {
           notes: String(normalized.notes || normalized.note || "").trim() || null,
         };
 
+        let existingExpenseQuery = supabase
+          .from("expenses")
+          .select("id, title, amount, category, expense_date, notes, vendor_id")
+          .eq("user_id", userId)
+          .ilike("title", title)
+          .eq("amount", amount);
+
+        existingExpenseQuery = payload.expense_date
+          ? existingExpenseQuery.eq("expense_date", payload.expense_date)
+          : existingExpenseQuery.is("expense_date", null);
+
+        existingExpenseQuery = payload.vendor_id
+          ? existingExpenseQuery.eq("vendor_id", payload.vendor_id)
+          : existingExpenseQuery.is("vendor_id", null);
+
+        const { data: existingExpense, error: findError } = await existingExpenseQuery
+          .limit(1)
+          .maybeSingle();
+
+        if (findError) {
+          failedCount += 1;
+          if (errors.length < 6) {
+            errors.push(`Row ${index + 2}: ${findError.message}`);
+          }
+          continue;
+        }
+
+        if (existingExpense?.id) {
+          const { error: updateError } = await supabase
+            .from("expenses")
+            .update({
+              title: payload.title,
+              amount: payload.amount,
+              category: payload.category || existingExpense.category,
+              expense_date: payload.expense_date,
+              vendor_id: payload.vendor_id,
+              notes: payload.notes || existingExpense.notes,
+            })
+            .eq("id", existingExpense.id)
+            .eq("user_id", userId);
+
+          if (updateError) {
+            failedCount += 1;
+            if (errors.length < 6) {
+              errors.push(`Row ${index + 2}: ${updateError.message}`);
+            }
+            continue;
+          }
+
+          updatedCount += 1;
+          continue;
+        }
+
         const { error } = await supabase.from("expenses").insert(payload);
         if (error) {
           failedCount += 1;
@@ -346,19 +400,19 @@ export default function ExpensesPage() {
         insertedCount += 1;
       }
 
-      if (insertedCount > 0) {
+      if (insertedCount > 0 || updatedCount > 0) {
         void fetchExpenses();
       }
 
-      if (insertedCount > 0 && failedCount === 0) {
+      if (insertedCount + updatedCount > 0 && failedCount === 0) {
         setImportResult({
           severity: "success",
-          message: `Imported ${insertedCount} expenses successfully.`,
+          message: `Imported ${insertedCount} expenses and updated ${updatedCount}.`,
         });
-      } else if (insertedCount > 0 && failedCount > 0) {
+      } else if (insertedCount + updatedCount > 0 && failedCount > 0) {
         setImportResult({
           severity: "warning",
-          message: `Imported ${insertedCount} expenses. ${failedCount} row(s) failed.`,
+          message: `Imported ${insertedCount}, updated ${updatedCount}. ${failedCount} row(s) failed.`,
           details: errors,
         });
       } else {
