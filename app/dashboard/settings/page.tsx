@@ -1,13 +1,14 @@
 "use client";
 
 import { useUser, useClerk } from "@clerk/nextjs";
-import ManageAccountsIcon from "@mui/icons-material/ManageAccounts";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import WorkspacePremiumOutlinedIcon from "@mui/icons-material/WorkspacePremiumOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import AttachMoneyIcon from "@mui/icons-material/AttachMoney";
+import { useCurrency, CURRENCIES } from "@/contexts/currency-context";
 import {
   Box,
   Button,
@@ -17,6 +18,8 @@ import {
   Chip,
   Divider,
   Grid,
+  MenuItem,
+  Select,
   Stack,
   Typography,
 } from "@mui/material";
@@ -24,6 +27,7 @@ import {
 export default function SettingsPage() {
   const { user } = useUser();
   const { signOut, openUserProfile } = useClerk();
+  const { currency, setCurrency } = useCurrency();
   const userEmail = user?.primaryEmailAddress?.emailAddress || "No email";
   const userName = user?.fullName || "No name set";
 
@@ -37,7 +41,7 @@ export default function SettingsPage() {
       </Box>
 
       <Grid container spacing={2}>
-        <Grid size={{ xs: 12, md: 4 }}>
+        <Grid size={{ xs: 12, md: 3 }}>
           <Card>
             <CardHeader
               title="Account"
@@ -53,7 +57,7 @@ export default function SettingsPage() {
           </Card>
         </Grid>
 
-        <Grid size={{ xs: 12, md: 4 }}>
+        <Grid size={{ xs: 12, md: 3 }}>
           <Card>
             <CardHeader
               title="Plan"
@@ -72,7 +76,7 @@ export default function SettingsPage() {
           </Card>
         </Grid>
 
-        <Grid size={{ xs: 12, md: 4 }}>
+        <Grid size={{ xs: 12, md: 3 }}>
           <Card>
             <CardHeader
               title="Notifications"
@@ -83,6 +87,36 @@ export default function SettingsPage() {
               <Typography fontWeight={700}>Email</Typography>
               <Typography variant="body2" color="text.secondary" mt={0.5}>
                 Invoices, stock alerts, expenses
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 3 }}>
+          <Card>
+            <CardHeader
+              title="Currency"
+              sx={{ pb: 0.5 }}
+              action={<AttachMoneyIcon fontSize="small" color="action" />}
+            />
+            <CardContent>
+              <Select
+                value={currency.code}
+                onChange={(e) => {
+                  const found = CURRENCIES.find((c) => c.code === e.target.value);
+                  if (found) setCurrency(found);
+                }}
+                size="small"
+                fullWidth
+              >
+                {CURRENCIES.map((c) => (
+                  <MenuItem key={c.code} value={c.code}>
+                    {c.symbol} — {c.name}
+                  </MenuItem>
+                ))}
+              </Select>
+              <Typography variant="body2" color="text.secondary" mt={1}>
+                All amounts will display in {currency.name}
               </Typography>
             </CardContent>
           </Card>

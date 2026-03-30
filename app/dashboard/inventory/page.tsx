@@ -6,6 +6,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import InventoryIcon from "@mui/icons-material/Inventory2";
 import RemoveIcon from "@mui/icons-material/Remove";
 import SearchIcon from "@mui/icons-material/Search";
+import ShoppingCartIcon from "@mui/icons-material/ShoppingCart";
 import {
   Alert,
   Box,
@@ -179,6 +180,48 @@ export default function InventoryPage() {
       expiry_date: product.expiry_date || "",
     });
     setOpen(true);
+  }
+
+  async function generatePurchaseOrder(product: ProductRow) {
+    const { default: jsPDF } = await import("jspdf");
+    const { default: autoTable } = await import("jspdf-autotable");
+
+    const doc = new jsPDF();
+    const poNumber = `PO-${Date.now().toString().slice(-6)}`;
+    const today = new Date().toLocaleDateString("en-IN");
+    const orderQty = Math.max(product.reorder_point * 2 - product.quantity, 1);
+
+    doc.setFontSize(20);
+    doc.text("Purchase Order", 14, 20);
+    doc.setFontSize(11);
+    doc.setTextColor(100);
+    doc.text(`PO Number: ${poNumber}`, 14, 30);
+    doc.text(`Date: ${today}`, 14, 37);
+    doc.text(`Supplier: ${product.vendors?.name || "Not specified"}`, 14, 44);
+
+    autoTable(doc, {
+      startY: 52,
+      head: [["SKU", "Product", "Current Stock", "Reorder Point", "Order Qty", "Unit Cost", "Total"]],
+      body: [[
+        product.sku,
+        product.name,
+        product.quantity,
+        product.reorder_point,
+        orderQty,
+        `Rs. ${product.unit_cost}`,
+        `Rs. ${(orderQty * product.unit_cost).toFixed(2)}`,
+      ]],
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [30, 30, 30] },
+    });
+
+    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    doc.setFontSize(10);
+    doc.setTextColor(0);
+    doc.text(`Total Order Value: Rs. ${(orderQty * product.unit_cost).toFixed(2)}`, 14, finalY);
+    doc.text("Please process this order at your earliest convenience.", 14, finalY + 8);
+
+    doc.save(`PO-${product.sku}-${poNumber}.pdf`);
   }
 
   async function importProductsFromFile(file: File) {
@@ -657,6 +700,21 @@ export default function InventoryPage() {
     return { label: "Healthy", color: "success" };
   }
 
+  function getExpiryStatus(expiryDate: string | null): {
+    label: string;
+    color: "error" | "warning" | "success";
+  } | null {
+    if (!expiryDate) return null;
+    const today = new Date();
+    const expiry = new Date(expiryDate);
+    const daysLeft = Math.ceil(
+      (expiry.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
+    );
+    if (daysLeft < 0) return { label: "Expired", color: "error" };
+    if (daysLeft <= 30) return { label: `Expires in ${daysLeft}d`, color: "warning" };
+    return { label: `Fresh (${daysLeft}d)`, color: "success" };
+  }
+
   const filtered = useMemo(
     () =>
       products.filter(
@@ -733,7 +791,43 @@ export default function InventoryPage() {
           ),
         }}
       />
-
+      {/* Expiry Alert Banner */}
+        {products.some((p) => {
+          if (!p.expiry_date) return false;
+          const daysLeft = Math.ceil(
+            (new Date(p.expiry_date).getTime() - new Date().getTime()) /
+              (1000 * 60 * 60 * 24)
+          );
+          return daysLeft <= 30;
+        }) && (
+          <Alert severity="warning">
+            <Typography variant="body2" fontWeight={600}>
+              ⚠️ Expiry Alert
+            </Typography>
+            {products
+              .filter((p) => {
+                if (!p.expiry_date) return false;
+                const daysLeft = Math.ceil(
+                  (new Date(p.expiry_date).getTime() - new Date().getTime()) /
+                    (1000 * 60 * 60 * 24)
+                );
+                return daysLeft <= 30;
+              })
+              .map((p) => {
+                const daysLeft = Math.ceil(
+                  (new Date(p.expiry_date!).getTime() - new Date().getTime()) /
+                    (1000 * 60 * 60 * 24)
+                );
+                return (
+                  <Typography key={p.id} variant="caption" component="div">
+                    {daysLeft < 0
+                      ? `❌ ${p.name} (${p.sku}) has expired!`
+                      : `🟡 ${p.name} (${p.sku}) expires in ${daysLeft} day(s)`}
+                  </Typography>
+                );
+              })}
+          </Alert>
+        )}
       {importResult ? (
         <Alert severity={importResult.severity}>
           <Typography variant="body2" fontWeight={600}>
@@ -855,19 +949,24 @@ export default function InventoryPage() {
                           sx={{ alignSelf: "flex-start" }}
                         />
                       )}
-                      {product.expiry_date && (
-                        <Typography variant="caption" color="text.secondary">
-                          Expires: {product.expiry_date}
-                        </Typography>
-                      )}
-                      <Stack direction="row" spacing={1} pt={1}>
+                      {product.expiry_date && (() => {
+                        const expiryStatus = getExpiryStatus(product.expiry_date);
+                        return expiryStatus ? (
+                          <Chip
+                            label={`📅 ${expiryStatus.label}`}
+                            color={expiryStatus.color}
+                            size="small"
+                            variant="outlined"
+                            sx={{ alignSelf: "flex-start" }}
+                          />
+                        ) : null;
+                      })()}
+                      <Stack direction="row" spacing={1} pt={1} flexWrap="wrap">
                         <Button
                           variant="outlined"
                           size="small"
                           startIcon={<AddIcon />}
-                          onClick={() =>
-                            updateQuantity(product.id, 1, "restock")
-                          }
+                          onClick={() => updateQuantity(product.id, 1, "restock")}
                         >
                           Restock
                         </Button>
@@ -876,13 +975,22 @@ export default function InventoryPage() {
                           size="small"
                           color="error"
                           startIcon={<RemoveIcon />}
-                          onClick={() =>
-                            updateQuantity(product.id, -1, "sale")
-                          }
+                          onClick={() => updateQuantity(product.id, -1, "sale")}
                           disabled={product.quantity === 0}
                         >
                           Sale
                         </Button>
+                        {product.quantity <= product.reorder_point && (
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            color="warning"
+                            startIcon={<ShoppingCartIcon />}
+                            onClick={() => void generatePurchaseOrder(product)}
+                          >
+                            Auto PO
+                          </Button>
+                        )}
                       </Stack>
                     </Stack>
                   </CardContent>
@@ -893,7 +1001,7 @@ export default function InventoryPage() {
         </Grid>
       )}
 
-      {/* Add Product Dialog */}
+      {/* Add/Edit Product Dialog */}
       <Dialog
         open={open}
         onClose={() => {
@@ -944,16 +1052,12 @@ export default function InventoryPage() {
               label="Reorder Point (alert threshold)"
               type="number"
               value={form.reorder_point || ""}
-              onChange={(e) =>
-                setForm({ ...form, reorder_point: e.target.value })
-              }
+              onChange={(e) => setForm({ ...form, reorder_point: e.target.value })}
               size="small"
             />
             <Select
               value={form.supplier_id}
-              onChange={(e) =>
-                setForm({ ...form, supplier_id: e.target.value })
-              }
+              onChange={(e) => setForm({ ...form, supplier_id: e.target.value })}
               displayEmpty
               size="small"
             >
@@ -968,9 +1072,7 @@ export default function InventoryPage() {
               label="Expiry Date (optional)"
               type="date"
               value={form.expiry_date}
-              onChange={(e) =>
-                setForm({ ...form, expiry_date: e.target.value })
-              }
+              onChange={(e) => setForm({ ...form, expiry_date: e.target.value })}
               size="small"
               InputLabelProps={{ shrink: true }}
             />

@@ -559,6 +559,99 @@ export default function ExpensesPage() {
     }
   }
 
+  function exportCSV() {
+  const headers = ["Title", "Amount (₹)", "Category", "Vendor", "Date", "Notes"];
+  const rows = expenses.map((e) => [
+    e.title,
+    Number(e.amount).toFixed(2),
+    e.category,
+    e.vendors?.name || "",
+    e.expense_date || "",
+    e.notes || "",
+  ]);
+
+  // Group by category for tax buckets
+  const categoryTotals = expenses.reduce((acc, e) => {
+    acc[e.category] = (acc[e.category] || 0) + Number(e.amount);
+    return acc;
+  }, {} as Record<string, number>);
+
+  const summaryRows = Object.entries(categoryTotals).map(([cat, total]) => [
+    `TOTAL - ${cat}`,
+    total.toFixed(2),
+    cat,
+    "",
+    "",
+    "",
+  ]);
+
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((r) => r.map((cell) => `"${cell}"`).join(",")),
+    "",
+    "--- TAX SUMMARY ---",
+    ...summaryRows.map((r) => r.map((cell) => `"${cell}"`).join(",")),
+  ].join("\n");
+
+  const blob = new Blob([csvContent], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `smartreceipt-expenses-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportPDF() {
+  const { default: jsPDF } = await import("jspdf");
+  const { default: autoTable } = await import("jspdf-autotable");
+
+  const doc = new jsPDF();
+
+  doc.setFontSize(20);
+  doc.text("SmartReceipt - Tax-Ready Expense Report", 14, 20);
+  doc.setFontSize(11);
+  doc.setTextColor(100);
+  doc.text(`Generated: ${new Date().toLocaleDateString("en-IN")}`, 14, 28);
+  doc.text(`Total Expenses: Rs. ${totalExpenses.toFixed(2)}`, 14, 35);
+
+  autoTable(doc, {
+    startY: 42,
+    head: [["Title", "Amount (Rs.)", "Category", "Vendor", "Date"]],
+    body: expenses.map((e) => [
+      e.title,
+      `Rs. ${Number(e.amount).toFixed(2)}`,
+      e.category,
+      e.vendors?.name || "-",
+      e.expense_date || "-",
+    ]),
+    styles: { fontSize: 9 },
+    headStyles: { fillColor: [30, 30, 30] },
+  });
+
+  const categoryTotals = expenses.reduce((acc, e) => {
+    acc[e.category] = (acc[e.category] || 0) + Number(e.amount);
+    return acc;
+  }, {} as Record<string, number>);
+
+  const finalY = (doc as any).lastAutoTable.finalY + 10;
+  doc.setFontSize(13);
+  doc.setTextColor(0);
+  doc.text("Tax Category Summary", 14, finalY);
+
+  autoTable(doc, {
+    startY: finalY + 5,
+    head: [["Category", "Total Amount (Rs.)"]],
+    body: Object.entries(categoryTotals).map(([cat, total]) => [
+      cat,
+      `Rs. ${total.toFixed(2)}`,
+    ]),
+    styles: { fontSize: 10 },
+    headStyles: { fillColor: [30, 30, 30] },
+  });
+
+  doc.save(`smartreceipt-tax-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+}
   const filtered = useMemo(
     () =>
       expenses.filter((e) =>
@@ -586,6 +679,12 @@ export default function ExpensesPage() {
           </Typography>
         </Box>
         <Stack direction="row" spacing={1.25}>
+          <Button variant="outlined" color="success" onClick={exportCSV}>
+            Export CSV
+          </Button>
+          <Button variant="outlined" color="info" onClick={() => void exportPDF()}>
+            Export PDF
+          </Button>
           <Button
             variant="outlined"
             color="warning"
