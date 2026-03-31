@@ -15,8 +15,10 @@ SmartReceipt is designed as a full web experience, not just a dashboard.
 1. Open the home page and explore features.
 2. Enter the app via dashboard CTA.
 3. Manage invoices, expenses, inventory, clients, and vendors.
-4. Ask the AI assistant business questions using current account data.
-5. Trigger automated email notifications when key events occur.
+4. Import expenses or inventory in bulk from spreadsheet files.
+5. Clean duplicate expense/product rows after import.
+6. Ask the AI assistant business questions using current account data.
+7. Trigger automated email notifications when key events occur.
 
 ### Website sections at a glance
 
@@ -32,6 +34,11 @@ SmartReceipt is built for real small-business workflows:
 - Create and manage professional invoices
 - Track expenses with clear categorization
 - Monitor product inventory with low-stock alerts
+- Import expenses and products from XLSX/XLS/CSV in bulk
+- Clean duplicate expenses/products safely after imports
+- Export tax-ready expense reports to CSV and PDF
+- Track inventory expiry dates with proactive alerts
+- Generate purchase order PDFs directly from low-stock products
 - Manage clients and vendors in one place
 - Ask an AI assistant business questions in plain English
 - Trigger transactional emails for invoicing and alerts
@@ -42,11 +49,31 @@ SmartReceipt is built for real small-business workflows:
 
 - Dashboard summary: revenue, expenses, unpaid invoices, low stock, top products
 - Invoices: create, edit, track payment status
-- Expenses: log and monitor spending
-- Inventory: update stock, track reorder levels
+- Expenses: log/edit spending, bulk import sheets, cleanup duplicates, export CSV/PDF reports
+- Inventory: update stock, bulk import sheets, SKU-safe duplicate cleanup, expiry tracking, PO PDF generation
 - Clients and vendors: maintain business contacts
 - AI Assistant: business Q&A over your live data
 - Settings: account/app settings panel
+
+### Data import and cleanup
+
+- Accepted import formats: `.xlsx`, `.xls`, `.csv`
+- Expenses import: adds or updates rows using title + amount + date/vendor matching
+- Inventory import: inserts products, updates owned SKU matches, and auto-adjusts conflicting global SKU values
+- Vendor linking: import flow can match or create related vendors/suppliers
+- Cleanup actions:
+	- Expenses: merges duplicate rows and keeps most complete values
+	- Inventory: merges duplicate SKU rows and re-links related stock/alert records
+
+### Reporting and operations
+
+- Expense exports:
+	- CSV with tax-summary totals by category
+	- PDF tax-ready report with line items + category summary
+- Inventory operations:
+	- Restock/sale quantity adjustments with movement logging
+	- Expiry warning banner for products expiring within 30 days
+	- One-click purchase order PDF generation for restocking
 
 ### Public marketing page
 
@@ -87,6 +114,10 @@ lib/
 	supabase.ts                 # Browser Supabase client
 	supabase-server.ts          # Server Supabase client
 	email.ts                    # Resend email helpers
+public/
+	templates/
+		expenses-import-template.csv
+		inventory-import-template.csv
 ```
 
 ## Pages (Brief)

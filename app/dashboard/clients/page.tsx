@@ -26,6 +26,7 @@ import {
   Typography,
 } from "@mui/material";
 import { supabase } from "@/lib/supabase";
+import { encrypt, decrypt } from "@/lib/encryption";
 import { useUser } from "@clerk/nextjs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -53,18 +54,24 @@ function clientCompletenessScore(client: ClientRow): number {
 
 function dedupeClientsByName(rows: ClientRow[]): ClientRow[] {
   const byName = new Map<string, ClientRow>();
-
   for (const row of rows) {
     const key = row.name.trim().toLowerCase();
     if (!key) continue;
-
     const existing = byName.get(key);
     if (!existing || clientCompletenessScore(row) > clientCompletenessScore(existing)) {
       byName.set(key, row);
     }
   }
-
   return Array.from(byName.values());
+}
+
+function decryptClient(client: ClientRow): ClientRow {
+  return {
+    ...client,
+    email: decrypt(client.email),
+    phone: decrypt(client.phone),
+    address: decrypt(client.address),
+  };
 }
 
 export default function ClientsPage() {
@@ -94,7 +101,7 @@ export default function ClientsPage() {
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: false });
-    const typedClients = (data as ClientRow[]) || [];
+    const typedClients = ((data as ClientRow[]) || []).map(decryptClient);
     setClients(dedupeClientsByName(typedClients));
     setLoading(false);
   }, [userId]);
@@ -106,7 +113,10 @@ export default function ClientsPage() {
   async function addClient() {
     if (!form.name) return;
     await supabase.from("clients").insert({
-      ...form,
+      name: form.name,
+      email: encrypt(form.email),
+      phone: encrypt(form.phone),
+      address: encrypt(form.address),
       user_id: userId,
     });
     setForm({ name: "", email: "", phone: "", address: "" });
@@ -118,36 +128,39 @@ export default function ClientsPage() {
     if (!editClient || !form.name) return;
     await supabase
       .from("clients")
-      .update({ ...form })
+      .update({
+        name: form.name,
+        email: encrypt(form.email),
+        phone: encrypt(form.phone),
+        address: encrypt(form.address),
+      })
       .eq("id", editClient.id);
     setEditClient(null);
     setForm({ name: "", email: "", phone: "", address: "" });
     void fetchClients();
   }
 
-async function deleteClient() {
-  if (!deleteId) return;
-  
-  // Check if client has invoices
-  const { data: invoices } = await supabase
-    .from("invoices")
-    .select("id")
-    .eq("client_id", deleteId);
+  async function deleteClient() {
+    if (!deleteId) return;
+    const { data: invoices } = await supabase
+      .from("invoices")
+      .select("id")
+      .eq("client_id", deleteId);
 
-  if (invoices && invoices.length > 0) {
+    if (invoices && invoices.length > 0) {
+      setDeleteId(null);
+      alert(`Cannot delete this client. They have ${invoices.length} invoice(s) linked to them. Please delete the invoices first.`);
+      return;
+    }
+
+    const { error } = await supabase.from("clients").delete().eq("id", deleteId);
+    if (error) {
+      console.error("Delete error:", error);
+      return;
+    }
     setDeleteId(null);
-    alert(`Cannot delete this client. They have ${invoices.length} invoice(s) linked to them. Please delete the invoices first.`);
-    return;
+    void fetchClients();
   }
-
-  const { error } = await supabase.from("clients").delete().eq("id", deleteId);
-  if (error) {
-    console.error("Delete error:", error);
-    return;
-  }
-  setDeleteId(null);
-  void fetchClients();
-}
 
   function openEdit(client: ClientRow) {
     setEditClient(client);
@@ -161,7 +174,6 @@ async function deleteClient() {
 
   async function importClientsFromFile(file: File) {
     if (!userId) return;
-
     setImporting(true);
     setImportResult(null);
 
@@ -172,10 +184,7 @@ async function deleteClient() {
       const firstSheetName = workbook.SheetNames[0];
 
       if (!firstSheetName) {
-        setImportResult({
-          severity: "error",
-          message: "The uploaded file does not contain any sheet.",
-        });
+        setImportResult({ severity: "error", message: "The uploaded file does not contain any sheet." });
         return;
       }
 
@@ -185,10 +194,7 @@ async function deleteClient() {
       );
 
       if (rows.length === 0) {
-        setImportResult({
-          severity: "warning",
-          message: "No rows found in file.",
-        });
+        setImportResult({ severity: "warning", message: "No rows found in file." });
         return;
       }
 
@@ -203,15 +209,10 @@ async function deleteClient() {
           Object.entries(row).map(([key, value]) => [normalizeHeader(key), value])
         );
 
-        const name = String(
-          normalized.name || normalized.client_name || normalized.full_name || ""
-        ).trim();
-
+        const name = String(normalized.name || normalized.client_name || normalized.full_name || "").trim();
         if (!name) {
           failedCount += 1;
-          if (errors.length < 6) {
-            errors.push(`Row ${index + 2}: Missing required client name.`);
-          }
+          if (errors.length < 6) errors.push(`Row ${index + 2}: Missing required client name.`);
           continue;
         }
 
@@ -228,17 +229,15 @@ async function deleteClient() {
 
         if (findError) {
           failedCount += 1;
-          if (errors.length < 6) {
-            errors.push(`Row ${index + 2}: ${findError.message}`);
-          }
+          if (errors.length < 6) errors.push(`Row ${index + 2}: ${findError.message}`);
           continue;
         }
 
         if (existingClient?.id) {
           const patch = {
-            email: email || existingClient.email,
-            phone: phone || existingClient.phone,
-            address: address || existingClient.address,
+            email: encrypt(email || decrypt(existingClient.email)),
+            phone: encrypt(phone || decrypt(existingClient.phone)),
+            address: encrypt(address || decrypt(existingClient.address)),
           };
 
           const { error: updateError } = await supabase
@@ -248,63 +247,40 @@ async function deleteClient() {
 
           if (updateError) {
             failedCount += 1;
-            if (errors.length < 6) {
-              errors.push(`Row ${index + 2}: ${updateError.message}`);
-            }
+            if (errors.length < 6) errors.push(`Row ${index + 2}: ${updateError.message}`);
             continue;
           }
-
           updatedCount += 1;
           continue;
         }
 
-        const payload = {
+        const { error } = await supabase.from("clients").insert({
           user_id: userId,
           name,
-          email,
-          phone,
-          address,
-        };
+          email: encrypt(email),
+          phone: encrypt(phone),
+          address: encrypt(address),
+        });
 
-        const { error } = await supabase.from("clients").insert(payload);
         if (error) {
           failedCount += 1;
-          if (errors.length < 6) {
-            errors.push(`Row ${index + 2}: ${error.message}`);
-          }
+          if (errors.length < 6) errors.push(`Row ${index + 2}: ${error.message}`);
           continue;
         }
-
         insertedCount += 1;
       }
 
-      if (insertedCount > 0 || updatedCount > 0) {
-        void fetchClients();
-      }
+      if (insertedCount > 0 || updatedCount > 0) void fetchClients();
 
       if (insertedCount + updatedCount > 0 && failedCount === 0) {
-        setImportResult({
-          severity: "success",
-          message: `Imported ${insertedCount} clients and updated ${updatedCount}.`,
-        });
+        setImportResult({ severity: "success", message: `Imported ${insertedCount} clients and updated ${updatedCount}.` });
       } else if (insertedCount + updatedCount > 0 && failedCount > 0) {
-        setImportResult({
-          severity: "warning",
-          message: `Imported ${insertedCount}, updated ${updatedCount}. ${failedCount} row(s) failed.`,
-          details: errors,
-        });
+        setImportResult({ severity: "warning", message: `Imported ${insertedCount}, updated ${updatedCount}. ${failedCount} row(s) failed.`, details: errors });
       } else {
-        setImportResult({
-          severity: "error",
-          message: "Import failed. No clients were added.",
-          details: errors.length > 0 ? errors : ["Check column names and data values."],
-        });
+        setImportResult({ severity: "error", message: "Import failed. No clients were added.", details: errors.length > 0 ? errors : ["Check column names and data values."] });
       }
     } catch {
-      setImportResult({
-        severity: "error",
-        message: "Failed to read file. Use a valid .xlsx, .xls, or .csv file.",
-      });
+      setImportResult({ severity: "error", message: "Failed to read file. Use a valid .xlsx, .xls, or .csv file." });
     } finally {
       setImporting(false);
     }
@@ -312,10 +288,7 @@ async function deleteClient() {
 
   async function cleanupDuplicateClients() {
     if (!userId || cleaning) return;
-
-    const shouldContinue = window.confirm(
-      "This will merge duplicate clients by name, re-link invoices, and permanently delete extra duplicate rows. Continue?"
-    );
+    const shouldContinue = window.confirm("This will merge duplicate clients by name, re-link invoices, and permanently delete extra duplicate rows. Continue?");
     if (!shouldContinue) return;
 
     setCleaning(true);
@@ -333,7 +306,7 @@ async function deleteClient() {
         return;
       }
 
-      const allClients = (data as ClientRow[]) || [];
+      const allClients = ((data as ClientRow[]) || []).map(decryptClient);
       const groups = new Map<string, ClientRow[]>();
 
       for (const client of allClients) {
@@ -352,72 +325,38 @@ async function deleteClient() {
       for (const group of groups.values()) {
         if (group.length < 2) continue;
 
-        const sorted = [...group].sort(
-          (a, b) => clientCompletenessScore(b) - clientCompletenessScore(a)
-        );
+        const sorted = [...group].sort((a, b) => clientCompletenessScore(b) - clientCompletenessScore(a));
         const primary = sorted[0];
         const duplicates = sorted.slice(1);
 
         const mergedPatch = {
-          email:
-            primary.email ||
-            duplicates.map((c) => c.email).find(Boolean) ||
-            null,
-          phone:
-            primary.phone ||
-            duplicates.map((c) => c.phone).find(Boolean) ||
-            null,
-          address:
-            primary.address ||
-            duplicates.map((c) => c.address).find(Boolean) ||
-            null,
+          email: encrypt(primary.email || duplicates.map((c) => c.email).find(Boolean) || null),
+          phone: encrypt(primary.phone || duplicates.map((c) => c.phone).find(Boolean) || null),
+          address: encrypt(primary.address || duplicates.map((c) => c.address).find(Boolean) || null),
         };
 
-        const { error: patchError } = await supabase
-          .from("clients")
-          .update(mergedPatch)
-          .eq("id", primary.id);
-
+        const { error: patchError } = await supabase.from("clients").update(mergedPatch).eq("id", primary.id);
         if (patchError) {
           failedGroups += 1;
-          if (errors.length < 6) {
-            errors.push(`Could not patch client ${primary.name}: ${patchError.message}`);
-          }
+          if (errors.length < 6) errors.push(`Could not patch client ${primary.name}: ${patchError.message}`);
           continue;
         }
 
         let groupFailed = false;
         for (const duplicate of duplicates) {
-          const { error: invoiceUpdateError } = await supabase
-            .from("invoices")
-            .update({ client_id: primary.id })
-            .eq("client_id", duplicate.id)
-            .eq("user_id", userId);
-
+          const { error: invoiceUpdateError } = await supabase.from("invoices").update({ client_id: primary.id }).eq("client_id", duplicate.id).eq("user_id", userId);
           if (invoiceUpdateError) {
             groupFailed = true;
-            if (errors.length < 6) {
-              errors.push(
-                `Could not relink invoices for ${duplicate.name}: ${invoiceUpdateError.message}`
-              );
-            }
+            if (errors.length < 6) errors.push(`Could not relink invoices for ${duplicate.name}: ${invoiceUpdateError.message}`);
             break;
           }
 
-          const { error: deleteError } = await supabase
-            .from("clients")
-            .delete()
-            .eq("id", duplicate.id)
-            .eq("user_id", userId);
-
+          const { error: deleteError } = await supabase.from("clients").delete().eq("id", duplicate.id).eq("user_id", userId);
           if (deleteError) {
             groupFailed = true;
-            if (errors.length < 6) {
-              errors.push(`Could not delete duplicate ${duplicate.name}: ${deleteError.message}`);
-            }
+            if (errors.length < 6) errors.push(`Could not delete duplicate ${duplicate.name}: ${deleteError.message}`);
             break;
           }
-
           deletedRows += 1;
         }
 
@@ -431,27 +370,14 @@ async function deleteClient() {
       void fetchClients();
 
       if (mergedGroups > 0 && failedGroups === 0) {
-        setImportResult({
-          severity: "success",
-          message: `Cleanup complete. Merged ${mergedGroups} duplicate group(s), removed ${deletedRows} duplicate row(s).`,
-        });
+        setImportResult({ severity: "success", message: `Cleanup complete. Merged ${mergedGroups} duplicate group(s), removed ${deletedRows} duplicate row(s).` });
       } else if (mergedGroups > 0 || failedGroups > 0) {
-        setImportResult({
-          severity: failedGroups > 0 ? "warning" : "success",
-          message: `Cleanup finished. Merged ${mergedGroups} group(s), failed ${failedGroups} group(s), removed ${deletedRows} duplicate row(s).`,
-          details: errors,
-        });
+        setImportResult({ severity: failedGroups > 0 ? "warning" : "success", message: `Cleanup finished. Merged ${mergedGroups} group(s), failed ${failedGroups} group(s), removed ${deletedRows} duplicate row(s).`, details: errors });
       } else {
-        setImportResult({
-          severity: "success",
-          message: "No duplicate clients found.",
-        });
+        setImportResult({ severity: "success", message: "No duplicate clients found." });
       }
     } catch {
-      setImportResult({
-        severity: "error",
-        message: "Client cleanup failed due to an unexpected error.",
-      });
+      setImportResult({ severity: "error", message: "Client cleanup failed due to an unexpected error." });
     } finally {
       setCleaning(false);
     }
@@ -470,19 +396,10 @@ async function deleteClient() {
           <Typography color="text.secondary">Manage your clients</Typography>
         </Box>
         <Stack direction="row" spacing={1.25}>
-          <Button
-            variant="outlined"
-            color="warning"
-            onClick={() => void cleanupDuplicateClients()}
-            disabled={cleaning || importing}
-          >
+          <Button variant="outlined" color="warning" onClick={() => void cleanupDuplicateClients()} disabled={cleaning || importing}>
             {cleaning ? "Cleaning..." : "Cleanup Duplicates"}
           </Button>
-          <Button
-            variant="outlined"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importing}
-          >
+          <Button variant="outlined" onClick={() => fileInputRef.current?.click()} disabled={importing}>
             {importing ? "Importing..." : "Import Sheet"}
           </Button>
           <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
@@ -496,9 +413,7 @@ async function deleteClient() {
           hidden
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (file) {
-              void importClientsFromFile(file);
-            }
+            if (file) void importClientsFromFile(file);
             event.target.value = "";
           }}
         />
@@ -521,13 +436,9 @@ async function deleteClient() {
 
       {importResult ? (
         <Alert severity={importResult.severity}>
-          <Typography variant="body2" fontWeight={600}>
-            {importResult.message}
-          </Typography>
+          <Typography variant="body2" fontWeight={600}>{importResult.message}</Typography>
           {importResult.details?.map((detail) => (
-            <Typography key={detail} variant="caption" component="div">
-              {detail}
-            </Typography>
+            <Typography key={detail} variant="caption" component="div">{detail}</Typography>
           ))}
         </Alert>
       ) : null}
@@ -551,9 +462,7 @@ async function deleteClient() {
                     <Skeleton variant="text" width="76%" />
                     <Skeleton variant="text" width="64%" />
                     <Skeleton variant="text" width="84%" />
-                    <Box pt={1}>
-                      <Skeleton variant="rounded" width={70} height={24} />
-                    </Box>
+                    <Box pt={1}><Skeleton variant="rounded" width={70} height={24} /></Box>
                   </Stack>
                 </CardContent>
               </Card>
@@ -563,9 +472,7 @@ async function deleteClient() {
       ) : filtered.length === 0 ? (
         <Box sx={{ textAlign: "center", py: 8 }}>
           <GroupIcon color="disabled" sx={{ fontSize: 48 }} />
-          <Typography mt={1.5} color="text.secondary">
-            No clients yet. Add your first client!
-          </Typography>
+          <Typography mt={1.5} color="text.secondary">No clients yet. Add your first client!</Typography>
         </Box>
       ) : (
         <Grid container spacing={2}>
@@ -588,18 +495,10 @@ async function deleteClient() {
                 />
                 <CardContent>
                   <Stack spacing={0.5}>
-                    <Typography variant="body2" color="text.secondary">
-                      {client.email || "No email"}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {client.phone || "No phone"}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      {client.address || "No address"}
-                    </Typography>
-                    <Box pt={1}>
-                      <Chip label="Client" size="small" variant="outlined" />
-                    </Box>
+                    <Typography variant="body2" color="text.secondary">{client.email || "No email"}</Typography>
+                    <Typography variant="body2" color="text.secondary">{client.phone || "No phone"}</Typography>
+                    <Typography variant="body2" color="text.secondary">{client.address || "No address"}</Typography>
+                    <Box pt={1}><Chip label="Client" size="small" variant="outlined" /></Box>
                   </Stack>
                 </CardContent>
               </Card>
@@ -613,38 +512,15 @@ async function deleteClient() {
         <DialogTitle>Add New Client</DialogTitle>
         <DialogContent>
           <Stack spacing={2} pt={1}>
-            <TextField
-              label="Full Name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-            />
-            <TextField
-              label="Email Address"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-            />
-            <TextField
-              label="Phone Number"
-              value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            />
-            <TextField
-              label="Address"
-              value={form.address}
-              onChange={(e) => setForm({ ...form, address: e.target.value })}
-              multiline
-              minRows={2}
-            />
+            <TextField label="Full Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            <TextField label="Email Address" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            <TextField label="Phone Number" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            <TextField label="Address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} multiline minRows={2} />
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)} color="inherit">
-            Cancel
-          </Button>
-          <Button variant="contained" onClick={() => void addClient()}>
-            Save Client
-          </Button>
+          <Button onClick={() => setOpen(false)} color="inherit">Cancel</Button>
+          <Button variant="contained" onClick={() => void addClient()}>Save Client</Button>
         </DialogActions>
       </Dialog>
 
@@ -653,38 +529,15 @@ async function deleteClient() {
         <DialogTitle>Edit Client</DialogTitle>
         <DialogContent>
           <Stack spacing={2} pt={1}>
-            <TextField
-              label="Full Name"
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              required
-            />
-            <TextField
-              label="Email Address"
-              value={form.email}
-              onChange={(e) => setForm({ ...form, email: e.target.value })}
-            />
-            <TextField
-              label="Phone Number"
-              value={form.phone}
-              onChange={(e) => setForm({ ...form, phone: e.target.value })}
-            />
-            <TextField
-              label="Address"
-              value={form.address}
-              onChange={(e) => setForm({ ...form, address: e.target.value })}
-              multiline
-              minRows={2}
-            />
+            <TextField label="Full Name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
+            <TextField label="Email Address" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            <TextField label="Phone Number" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+            <TextField label="Address" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} multiline minRows={2} />
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setEditClient(null)} color="inherit">
-            Cancel
-          </Button>
-          <Button variant="contained" onClick={() => void updateClient()}>
-            Update Client
-          </Button>
+          <Button onClick={() => setEditClient(null)} color="inherit">Cancel</Button>
+          <Button variant="contained" onClick={() => void updateClient()}>Update Client</Button>
         </DialogActions>
       </Dialog>
 
@@ -695,12 +548,8 @@ async function deleteClient() {
           <Typography>Are you sure you want to delete this client? This action cannot be undone.</Typography>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteId(null)} color="inherit">
-            Cancel
-          </Button>
-          <Button variant="contained" color="error" onClick={() => void deleteClient()}>
-            Delete
-          </Button>
+          <Button onClick={() => setDeleteId(null)} color="inherit">Cancel</Button>
+          <Button variant="contained" color="error" onClick={() => void deleteClient()}>Delete</Button>
         </DialogActions>
       </Dialog>
     </Stack>
